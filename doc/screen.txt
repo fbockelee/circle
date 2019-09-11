@@ -9,6 +9,7 @@ ESCAPE SEQUENCES
 \E[C		Cursor right one character
 ^M		Carriage return
 \E[J		Clear to end of screen
+\E[2J           Cursor home & Clear screen
 \E[K		Clear to end of line
 \E[%dX		Erase %1 characters starting at cursor
 ^J		Carriage return/linefeed

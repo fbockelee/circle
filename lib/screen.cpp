@@ -367,7 +367,26 @@ void CScreenDevice::Write (char chChar)
 		case ';':
 			m_nState = ScreenStateSemicolon;
 			break;
-
+//Add FBM:10092019
+//Adding escape ]2J and ]0J 
+//https://en.wikipedia.org/wiki/ANSI_escape_code#Unix-like_systems
+                case 'J':
+			switch(m_nParam1)
+			{
+			case 0:
+				ClearDisplayEnd();
+				m_nState = ScreenStateStart;
+				break;
+			case 1:
+				//TODO
+				break;
+			case 2:
+				CursorHome ();
+				ClearDisplayEnd();
+				m_nState = ScreenStateStart;
+				break;
+			}
+//End FBM:10092019
 		case 'L':
 			InsertLines (m_nParam1);
 			m_nState = ScreenStateStart;
