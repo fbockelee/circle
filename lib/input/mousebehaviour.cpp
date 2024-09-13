@@ -2,7 +2,7 @@
 // mousebehaviour.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2016-2018  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2016-2024  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -22,7 +22,7 @@
 #include <circle/bcm2835.h>
 #include <assert.h>
 
-#define MOUSE_BUTTONS		3
+#define MOUSE_BUTTONS		5
 
 #define ACCELERATION		18		// 1/10
 
@@ -31,11 +31,13 @@
 #define CURSOR_HOTSPOT_X	0
 #define CURSOR_HOTSPOT_Y	0
 
+#if RASPPI <= 4
+
 static const u32 CursorSymbol[CURSOR_HEIGHT][CURSOR_WIDTH] =
 {
 #define B	0
 #define G	0xFF7F7F7FU
-#define W	0xFFFFFFFFU
+#define W	0xFF2F2F2FU
 	{G,G,B,B,B,B,B,B,B,B,B,B,B,B,B,B},
 	{G,W,G,B,B,B,B,B,B,B,B,B,B,B,B,B},
 	{G,W,W,G,B,B,B,B,B,B,B,B,B,B,B,B},
@@ -54,6 +56,8 @@ static const u32 CursorSymbol[CURSOR_HEIGHT][CURSOR_WIDTH] =
 	{B,B,B,B,B,B,G,G,G,G,B,B,B,B,B,B}
 };
 
+#endif
+
 CMouseBehaviour::CMouseBehaviour (void)
 :	m_nScreenWidth (0),
 	m_nScreenHeight (0),
@@ -69,6 +73,11 @@ CMouseBehaviour::CMouseBehaviour (void)
 CMouseBehaviour::~CMouseBehaviour (void)
 {
 	m_pEventHandler = 0;
+
+	if (m_bCursorOn)
+	{
+		SetCursorState (0, 0, FALSE);
+	}
 }
 
 boolean CMouseBehaviour::Setup (unsigned nScreenWidth, unsigned nScreenHeight)
@@ -84,6 +93,7 @@ boolean CMouseBehaviour::Setup (unsigned nScreenWidth, unsigned nScreenHeight)
 	m_nPosX = (m_nScreenWidth+1) / 2;
 	m_nPosY = (m_nScreenHeight+1) / 2;
 
+#if RASPPI <= 4
 	CBcmPropertyTags Tags;
 	TPropertyTagSetCursorInfo TagSetCursorInfo;
 	TagSetCursorInfo.nWidth = CURSOR_WIDTH;
@@ -101,8 +111,31 @@ boolean CMouseBehaviour::Setup (unsigned nScreenWidth, unsigned nScreenHeight)
 	{
 		return FALSE;
 	}
+#endif
 
 	return TRUE;
+}
+
+void CMouseBehaviour::Release (void)
+{
+	if (   m_nScreenWidth == 0		// not setup?
+	    || m_nScreenHeight == 0)
+	{
+		return;
+	}
+
+	if (m_bCursorOn)
+	{
+		SetCursorState (0, 0, FALSE);
+	}
+
+	m_nScreenWidth = 0;
+	m_nScreenHeight = 0;
+	m_nPosX = 0;
+	m_nPosY = 0;
+	m_bHasMoved = FALSE;
+	m_bCursorOn = FALSE;
+	m_nButtons = 0;
 }
 
 void CMouseBehaviour::RegisterEventHandler (TMouseEventHandler *pEventHandler)
@@ -156,7 +189,7 @@ void CMouseBehaviour::UpdateCursor (void)
 	}
 }
 
-void CMouseBehaviour::MouseStatusChanged (unsigned nButtons, int nDisplacementX, int nDisplacementY)
+void CMouseBehaviour::MouseStatusChanged (unsigned nButtons, int nDisplacementX, int nDisplacementY, int nWheelMove)
 {
 	if (   m_nScreenWidth == 0		// not setup?
 	    || m_nScreenHeight == 0)
@@ -189,7 +222,7 @@ void CMouseBehaviour::MouseStatusChanged (unsigned nButtons, int nDisplacementX,
 
 		if (m_pEventHandler != 0)
 		{
-			(*m_pEventHandler) (MouseEventMouseMove, nButtons, m_nPosX, m_nPosY);
+			(*m_pEventHandler) (MouseEventMouseMove, nButtons, m_nPosX, m_nPosY, nWheelMove);
 		}
 	}
 
@@ -203,13 +236,20 @@ void CMouseBehaviour::MouseStatusChanged (unsigned nButtons, int nDisplacementX,
 			if (   !(m_nButtons & nMask)
 			    &&  (nButtons & nMask))
 			{
-				(*m_pEventHandler) (MouseEventMouseDown, nMask, m_nPosX, m_nPosY);
+				(*m_pEventHandler) (MouseEventMouseDown, nMask, m_nPosX, m_nPosY, nWheelMove);
 			}
 			else if (   (m_nButtons & nMask)
 				 && !(nButtons & nMask))
 			{
-				(*m_pEventHandler) (MouseEventMouseUp, nMask, m_nPosX, m_nPosY);
+				(*m_pEventHandler) (MouseEventMouseUp, nMask, m_nPosX, m_nPosY, nWheelMove);
 			}
+		}
+	}
+
+	if (nWheelMove != 0) {
+		if (m_pEventHandler != 0)
+		{
+			(*m_pEventHandler) (MouseEventMouseWheel, nButtons, m_nPosX, m_nPosY, nWheelMove);
 		}
 	}
 
@@ -218,6 +258,7 @@ void CMouseBehaviour::MouseStatusChanged (unsigned nButtons, int nDisplacementX,
 
 boolean CMouseBehaviour::SetCursorState (unsigned nPosX, unsigned nPosY, boolean bVisible)
 {
+#if RASPPI <= 4
 	CBcmPropertyTags Tags;
 	TPropertyTagSetCursorState TagSetCursorState;
 	TagSetCursorState.nEnable = bVisible ? CURSOR_ENABLE_VISIBLE : CURSOR_ENABLE_INVISIBLE;
@@ -233,6 +274,7 @@ boolean CMouseBehaviour::SetCursorState (unsigned nPosX, unsigned nPosY, boolean
 	{
 		return FALSE;
 	}
+#endif
 
 	return TRUE;
 }

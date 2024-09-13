@@ -2,7 +2,7 @@
 // gpiopin.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2024  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -25,6 +25,9 @@
 
 #define GPIO_PINS	54
 
+#define LOW		0
+#define HIGH		1
+
 enum TGPIOVirtualPin
 {
 	GPIOPinAudioLeft	= GPIO_PINS,
@@ -34,6 +37,7 @@ enum TGPIOVirtualPin
 
 enum TGPIOMode
 {
+	GPIOModeNone,
 	GPIOModeInput,
 	GPIOModeOutput,
 	GPIOModeInputPullUp,
@@ -44,6 +48,11 @@ enum TGPIOMode
 	GPIOModeAlternateFunction3,
 	GPIOModeAlternateFunction4,
 	GPIOModeAlternateFunction5,
+#if RASPPI >= 5
+	GPIOModeAlternateFunction6,
+	GPIOModeAlternateFunction7,
+	GPIOModeAlternateFunction8,
+#endif
 	GPIOModeUnknown
 };
 
@@ -63,12 +72,22 @@ enum TGPIOInterrupt
 	GPIOInterruptOnLowLevel,
 	GPIOInterruptOnAsyncRisingEdge,
 	GPIOInterruptOnAsyncFallingEdge,
+#if RASPPI >= 5
+	GPIOInterruptOnDebouncedHighLevel,
+	GPIOInterruptOnDebouncedLowLevel,
+#endif
 	GPIOInterruptUnknown
 };
 
 typedef void TGPIOInterruptHandler (void *pParam);
 
+#if RASPPI >= 5
+	#include <circle/gpiopin2712.h>
+#else
+
 class CGPIOManager;
+
+/// \note For the Raspberry Pi 5 is only a subset of methods supported.
 
 class CGPIOPin		/// Encapsulates a GPIO pin
 {
@@ -77,6 +96,7 @@ public:
 	CGPIOPin (void);
 
 	/// \param nPin Pin number, can be physical (Broadcom) number or TGPIOVirtualPin
+	/// \param Mode Pin mode to be set
 	/// \param pManager Is only required for using interrupts (IRQ)
 	CGPIOPin (unsigned nPin, TGPIOMode Mode, CGPIOManager *pManager = 0);
 	virtual ~CGPIOPin (void);
@@ -97,15 +117,16 @@ public:
 	void Write (unsigned nValue);
 	/// \return Value read from pin (LOW or HIGH)
 	unsigned Read (void) const;
-#define LOW		0
-#define HIGH		1
 
 	/// \brief Write inverted value to pin
 	void Invert (void);
 
 	/// \param pHandler Interrupt handler to be called on GPIO event
 	/// \param pParam Any parameter, will be handed over to the interrupt handler
-	void ConnectInterrupt (TGPIOInterruptHandler *pHandler, void *pParam);
+	/// \param bAutoAck Automatically acknowledge GPIO event detect status?
+	/// \note If bAutoAck = FALSE, must call AcknowledgeInterrupt() from interrupt handler!
+	void ConnectInterrupt (TGPIOInterruptHandler *pHandler, void *pParam,
+			       boolean bAutoAck = TRUE);
 	void DisconnectInterrupt (void);
 
 	/// \brief Enable interrupt on GPIO event
@@ -116,6 +137,15 @@ public:
 	void EnableInterrupt2 (TGPIOInterrupt Interrupt);
 	void DisableInterrupt2 (void);
 
+	/// \brief Manually acknowledge GPIO event detect status from interrupt handler
+	void AcknowledgeInterrupt (void);
+
+	/// \brief Set mode of GPIO0-31 to input or output
+	/// \param nInputMask Set the GPIO pins to input, for which the respective bits are set
+	/// \param nOutputMask Set the GPIO pins to output, for which the respective bits are set
+	/// \note The pins must be set to input or output before in the constructor
+	///	  or using SetMode().
+	static void SetModeAll (u32 nInputMask, u32 nOutputMask);
 	/// \param nValue Level of GPIO0-31 in the respective bits to be written (masked by nMask)
 	/// \param nMask  Bit mask for the written value (only those GPIOs are affected, for which
 	///		  the respective bit is set in nMask, the others are not touched)
@@ -140,10 +170,13 @@ protected:
 	CGPIOManager		*m_pManager;
 	TGPIOInterruptHandler	*m_pHandler;
 	void			*m_pParam;
+	boolean			 m_bAutoAck;
 	TGPIOInterrupt		 m_Interrupt;
 	TGPIOInterrupt		 m_Interrupt2;
 
 	static CSpinLock s_SpinLock;
 };
+
+#endif
 
 #endif

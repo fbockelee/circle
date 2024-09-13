@@ -2,7 +2,7 @@
 // interrupt.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2023  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -32,6 +32,8 @@ public:
 	CInterruptSystem (void);
 	~CInterruptSystem (void);
 
+	void Destructor (void);		// explicit callable
+
 	boolean Initialize (void);
 
 	void ConnectIRQ (unsigned nIRQ, TIRQHandler *pHandler, void *pParam);
@@ -55,10 +57,8 @@ public:
 
 	static void SendIPI (unsigned nCore, unsigned nIPI);
 
-#if AARCH == 32
 	static void CallSecureMonitor (u32 nFunction, u32 nParam);
 	static void SecureMonitorHandler (u32 nFunction, u32 nParam);
-#endif
 #endif
 
 private:

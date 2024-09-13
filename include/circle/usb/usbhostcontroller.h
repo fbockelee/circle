@@ -2,7 +2,7 @@
 // usbhostcontroller.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2018  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2023  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -20,19 +20,26 @@
 #ifndef _circle_usb_usbhostcontroller_h
 #define _circle_usb_usbhostcontroller_h
 
+#include <circle/usb/usbcontroller.h>
 #include <circle/usb/usb.h>
 #include <circle/usb/usbendpoint.h>
 #include <circle/usb/usbrequest.h>
+#include <circle/ptrlist.h>
+#include <circle/spinlock.h>
 #include <circle/types.h>
 
 // Timeouts are supported on interrupt endpoints only!
 
 #define USB_TIMEOUT_NONE	0	// Wait forever
 
-class CUSBHostController
+class CUSBHCIRootPort;
+class CUSBStandardHub;
+class CUSBDevice;
+
+class CUSBHostController : public CUSBController	/// Base class of USB host controllers
 {
 public:
-	CUSBHostController (void);
+	CUSBHostController (boolean bPlugAndPlay);
 	virtual ~CUSBHostController (void);
 	
 	// returns resulting length or < 0 on failure
@@ -61,6 +68,43 @@ public:
 
 	virtual boolean SubmitAsyncRequest (CUSBRequest *pURB,
 					    unsigned nTimeoutMs = USB_TIMEOUT_NONE) = 0;
+
+	virtual void CancelDeviceTransactions (CUSBDevice *pUSBDevice) {}
+
+public:
+	boolean IsPlugAndPlay (void) const;
+
+	// must be called from TASK_LEVEL, if Plug-and-Play is enabled
+	// returns TRUE if device tree might have been updated (always TRUE on first call)
+	boolean UpdatePlugAndPlay (void) override;
+
+#if RASPPI <= 4
+	static boolean IsActive (void)
+	{
+		return s_pThis != 0 ? TRUE : FALSE;
+	}
+
+	static CUSBHostController *Get (void);
+#endif
+
+protected:
+	void PortStatusChanged (CUSBHCIRootPort *pRootPort);
+	friend class CXHCIRootPort;
+
+private:
+	void PortStatusChanged (CUSBStandardHub *pHub);
+	friend class CUSBStandardHub;
+
+private:
+	boolean m_bPlugAndPlay;
+	boolean m_bFirstUpdateCall;
+
+	CPtrList  m_HubList;
+	CSpinLock m_SpinLock;
+
+#if RASPPI <= 4
+	static CUSBHostController *s_pThis;
+#endif
 };
 
 #endif

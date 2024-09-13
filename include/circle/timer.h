@@ -1,8 +1,8 @@
 //
-// timer.h
+/// \file timer.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2021  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -27,7 +27,7 @@
 #include <circle/spinlock.h>
 #include <circle/types.h>
 
-#define HZ		100			// ticks per second
+#define HZ		100			///< ticks per second
 
 #define MSEC2HZ(msec)	((msec) * HZ / 1000)
 
@@ -35,7 +35,14 @@ typedef uintptr TKernelTimerHandle;
 
 typedef void TKernelTimerHandler (TKernelTimerHandle hTimer, void *pParam, void *pContext);
 
+/// \param nNewTime New time to be set in seconds since 1970-01-01 00:00:00 UTC
+/// \param nOldTime Current time in seconds since 1970-01-01 00:00:00 UTC
+/// \return TRUE if new time can be set, FALSE if new time is invalid (do not set)
+typedef boolean TUpdateTimeHandler (unsigned nNewTime, unsigned nOldTime);
+
 typedef void TPeriodicTimerHandler (void);
+
+extern "C" void DelayLoop (unsigned nCount);
 
 class CTimer	/// Manages the system clock, supports kernel timers and a calibrated delay loop
 {
@@ -59,6 +66,9 @@ public:
 
 	/// \return Current clock ticks of an 1 MHz counter, may wrap
 	static unsigned GetClockTicks (void);
+
+	/// \return Current clock ticks of an 1 MHz counter (continuous)
+	static u64 GetClockTicks64 (void);
 #define CLOCKHZ	1000000
 
 	/// \return 1/HZ seconds since system boot, may wrap
@@ -115,6 +125,10 @@ public:
 	/// When a CTimer object is available better use this instead of SimpleusDelay()\n
 	/// \param nMicroSeconds Delay in microseconds
 	void usDelay (unsigned nMicroSeconds)	{ SimpleusDelay (nMicroSeconds); }
+#ifdef CALIBRATE_DELAY
+	/// \param nNanoSeconds Delay in nanoseconds
+	void nsDelay (unsigned nNanoSeconds)	{ DelayLoop (m_nusDelay * nNanoSeconds / 1000); }
+#endif
 	
 	/// \return Pointer to the only CTimer object in the system
 	static CTimer *Get (void);
@@ -126,8 +140,10 @@ public:
 	/// \param nMicroSeconds Delay in microseconds
 	static void SimpleusDelay (unsigned nMicroSeconds);
 
+	/// \param pHandler Handler which is called, when SetTime() is invoked to check the time
+	void RegisterUpdateTimeHandler (TUpdateTimeHandler *pHandler);
+
 	/// \param pHandler Handler which is called on each timer tick (HZ times per second)
-	/// \warning This is normally reserved for system purposes!
 	void RegisterPeriodicHandler (TPeriodicTimerHandler *pHandler);
 
 private:
@@ -162,7 +178,11 @@ private:
 	unsigned		 m_nMsDelay;
 	unsigned		 m_nusDelay;
 
-	TPeriodicTimerHandler	*m_pPeriodicHandler;
+	TUpdateTimeHandler	*m_pUpdateTimeHandler;
+
+#define TIMER_MAX_PERIODIC_HANDLERS	4
+	TPeriodicTimerHandler	*m_pPeriodicHandler[TIMER_MAX_PERIODIC_HANDLERS];
+	volatile unsigned	 m_nPeriodicHandlers;
 
 	static CTimer *s_pThis;
 

@@ -2,7 +2,7 @@
 // netdevice.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2020  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -27,6 +27,14 @@
 
 #define MAX_NET_DEVICES		5
 
+enum TNetDeviceType
+{
+	NetDeviceTypeEthernet,
+	NetDeviceTypeWLAN,
+	NetDeviceTypeAny,
+	NetDeviceTypeUnknown
+};
+
 enum TNetDeviceSpeed
 {
 	NetDeviceSpeed10Half,
@@ -38,13 +46,21 @@ enum TNetDeviceSpeed
 	NetDeviceSpeedUnknown
 };
 
-class CNetDevice	/// Base class (interface) of (Ethernet) net devices
+class CNetDevice	/// Base class (interface) of net devices
 {
 public:
 	virtual ~CNetDevice (void) {}
 
+	/// \return Type of this net device
+	virtual TNetDeviceType GetType (void)		{ return NetDeviceTypeEthernet; }
+
 	/// \return Pointer to a MAC address object, which holds our own address
 	virtual const CMACAddress *GetMACAddress (void) const = 0;
+
+	/// \return TRUE if it is advisable to call SendFrame()
+	/// \note SendFrame() can be called at any time, but may fail when the TX queue is full.\n
+	///	  This method gives a hint, if calling SendFrame() is advisable.
+	virtual boolean IsSendFrameAdvisable (void)	{ return TRUE; }
 
 	/// \brief Send a valid Ethernet frame to the network
 	/// \param pBuffer Pointer to the frame, does not contain FCS
@@ -75,6 +91,10 @@ public:
 	/// \param nDeviceNumber Zero-based number of a net device (normally only 0 is used)
 	/// \return Pointer to the device object
 	static CNetDevice *GetNetDevice (unsigned nDeviceNumber);
+
+	/// \param Type Specific net device type to search for (or NetDeviceTypeAny)
+	/// \return Pointer to the first device object of this type
+	static CNetDevice *GetNetDevice (TNetDeviceType Type);
 
 protected:
 	void AddNetDevice (void);

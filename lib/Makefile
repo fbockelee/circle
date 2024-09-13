@@ -2,7 +2,7 @@
 # Makefile
 #
 # Circle - A C++ bare metal environment for Raspberry Pi
-# Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+# Copyright (C) 2014-2024  R. Stange <rsta2@o2online.de>
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,15 +19,17 @@
 #
 
 OBJS	= actled.o alloc.o assert.o bcmframebuffer.o bcmmailbox.o \
-	  bcmpropertytags.o chargenerator.o classallocator.o \
+	  bcmpropertytags.o bcmwatchdog.o chargenerator.o classallocator.o \
 	  cputhrottle.o debug.o delayloop.o device.o devicenameservice.o \
-	  dmachannel.o gpioclock.o gpiomanager.o gpiopin.o gpiopinfiq.o \
-	  i2cmaster.o i2ssoundbasedevice.o koptions.o \
+	  dmachannel.o \
+	  koptions.o \
 	  logger.o machineinfo.o multicore.o nulldevice.o ptrarray.o ptrlist.o \
-	  pwmoutput.o pwmsoundbasedevice.o pwmsounddevice.o screen.o serial.o \
-	  soundbasedevice.o spimaster.o spimasteraux.o spimasterdma.o spinlock.o \
+	  qemu.o screen.o serial.o \
+	  spinlock.o \
 	  string.o sysinit.o time.o timer.o tracer.o util.o \
-	  util_fast.o virtualgpiopin.o chainboot.o macaddress.o netdevice.o
+	  util_fast.o virtualgpiopin.o chainboot.o macaddress.o netdevice.o \
+	  new.o heapallocator.o pageallocator.o setjmp.o numberpool.o \
+	  writebuffer.o 2dgraphics.o ptrlistfiq.o
 
 OBJS32	= cache-v7.o exceptionhandler.o exceptionstub.o memory.o pagetable.o \
 	  startup.o synchronize.o
@@ -48,17 +50,39 @@ else
 OBJS	+= $(OBJS64)
 endif
 
-ifneq ($(strip $(RASPPI)),4)
-OBJS	+= bcmrandom.o i2cslave.o interrupt.o usertimer.o
+ifneq ($(filter 1 2 3,$(RASPPI)),)
+OBJS	+= bcmrandom.o interrupt.o mphi.o
 else
-OBJS	+= bcm54213.o bcmpciehostbridge.o bcmrandom200.o interruptgic.o
+OBJS	+= bcmpciehostbridge.o bcmrandom200.o interruptgic.o dma4channel.o devicetreeblob.o
+endif
+
+ifeq ($(strip $(RASPPI)),4)
+OBJS	+= bcm54213.o
+endif
+
+ifneq ($(strip $(RASPPI)),5)
+OBJS	+= gpioclock.o gpiomanager.o gpiopin.o gpiopinfiq.o i2cmaster.o i2cmasterirq.o i2cslave.o \
+	   pwmoutput.o smimaster.o spimaster.o spimasteraux.o spimasterdma.o usertimer.o \
+	   latencytester.o
+else
+OBJS	+= southbridge.o dmachannel-rp1.o gpiomanager2712.o gpiopin2712.o gpioclock-rp1.o \
+	   pwmoutput-rp1.o i2cmaster-rp1.o spimaster-rp1.o spimasterdma-rp1.o macb.o
 endif
 
 ifneq ($(strip $(STDLIB_SUPPORT)),3)
-OBJS	+= new.o purecall.o
+OBJS	+= purecall.o cxa_guard.o
+endif
+
+# using coherent memory region
+ifeq ($(strip $(AARCH)),32)
+CFLAGS += -mno-unaligned-access
+else
+CFLAGS += -mstrict-align
 endif
 
 libcircle.a: $(OBJS)
 	@echo "  AR    $@"
 	@rm -f $@
 	@$(AR) cr $@ $(OBJS)
+
+-include $(DEPS)

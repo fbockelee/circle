@@ -2,7 +2,7 @@
 // usbgamepad.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2018  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2021  R. Stange <rsta2@o2online.de>
 //
 // Ported from the USPi driver which is:
 // 	Copyright (C) 2014  M. Maccaferri <macca@maccasoft.com>
@@ -24,6 +24,7 @@
 #define _circle_usb_usbgamepad_h
 
 #include <circle/usb/usbhiddevice.h>
+#include <circle/numberpool.h>
 #include <circle/macros.h>
 #include <circle/types.h>
 
@@ -84,6 +85,11 @@ enum TGamePadButton		// Digital button (bit masks)
 	GamePadButtonMinus	= BIT(20),		// optional
 	GamePadButtonTouchpad	= BIT(21)		// optional
 };
+
+// Number of digital buttons for known gamepads:
+#define GAMEPAD_BUTTONS_STANDARD	19
+#define GAMEPAD_BUTTONS_ALTERNATIVE	21
+#define GAMEPAD_BUTTONS_WITH_TOUCHPAD	22
 
 enum TGamePadAxis		// Axis or analog button
 {
@@ -205,7 +211,7 @@ private:
 	/// \note Overwrite this if you have to do additional checks on received reports!
 	virtual void ReportHandler (const u8 *pReport, unsigned nReportSize);
 
-	/// \param pReport Pointer to report packet received via the USB status reporting endpoint
+	/// \param pReportBuffer Pointer to report packet received via the USB status reporting endpoint
 	/// \note Updates the m_State member variable
 	/// \note m_usReportSize member has to be set here or in Configure() of the subclass.
 	virtual void DecodeReport (const u8 *pReportBuffer) = 0;
@@ -217,7 +223,7 @@ protected:
 	u16 m_usReportSize;
 
 	unsigned m_nDeviceNumber;
-	static unsigned s_nDeviceNumber;
+	static CNumberPool s_DeviceNumberPool;
 };
 
 #endif

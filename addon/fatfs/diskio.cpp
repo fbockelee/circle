@@ -1,5 +1,5 @@
 /*-----------------------------------------------------------------------*/
-/* Low level disk I/O module skeleton for FatFs     (C)ChaN, 2016        */
+/* Low level disk I/O module skeleton for FatFs     (C)ChaN, 2019        */
 /* Implementation for Circle by R. Stange <rsta2@o2online.de>            */
 /*-----------------------------------------------------------------------*/
 /* If a working storage control module is available, it should be        */
@@ -9,7 +9,7 @@
 /*-----------------------------------------------------------------------*/
 
 #include "ff.h"			/* Obtains integer types */
-#include "diskio.h"		/* FatFs lower layer API */
+#include "diskio.h"		/* Declarations of disk functions */
 #include <circle/device.h>
 #include <circle/devicenameservice.h>
 #include <circle/util.h>
@@ -37,6 +37,20 @@ static CDevice *s_pVolume[FF_VOLUMES] = {0};
 
 static u8 *s_pBuffer = 0;
 static unsigned s_nBufferSize = 0;
+
+
+
+/*-----------------------------------------------------------------------*/
+/* Callbacks                                                             */
+/*-----------------------------------------------------------------------*/
+
+static void disk_removed (
+	CDevice *pDevice,	/* device removed */
+	void *pContext
+)
+{
+	*((CDevice **) pContext) = 0;
+}
 
 
 
@@ -75,6 +89,8 @@ DSTATUS disk_initialize (
 	s_pVolume[pdrv] = CDeviceNameService::Get ()->GetDevice (s_pVolumeName[pdrv], TRUE);
 	if (s_pVolume[pdrv] != 0)
 	{
+		s_pVolume[pdrv]->RegisterRemovedHandler (disk_removed, &s_pVolume[pdrv]);
+
 		return 0;
 	}
 
@@ -90,7 +106,7 @@ DSTATUS disk_initialize (
 DRESULT disk_read (
 	BYTE pdrv,		/* Physical drive nmuber to identify the drive */
 	BYTE *buff,		/* Data buffer to store read data */
-	DWORD sector,	/* Start sector in LBA */
+	LBA_t sector,	/* Start sector in LBA */
 	UINT count		/* Number of sectors to read */
 )
 {
@@ -146,10 +162,12 @@ DRESULT disk_read (
 /* Write Sector(s)                                                       */
 /*-----------------------------------------------------------------------*/
 
+#if FF_FS_READONLY == 0
+
 DRESULT disk_write (
 	BYTE pdrv,			/* Physical drive nmuber to identify the drive */
 	const BYTE *buff,	/* Data to be written */
-	DWORD sector,		/* Start sector in LBA */
+	LBA_t sector,		/* Start sector in LBA */
 	UINT count			/* Number of sectors to write */
 )
 {
@@ -196,6 +214,7 @@ DRESULT disk_write (
 	return RES_OK;
 }
 
+#endif
 
 
 /*-----------------------------------------------------------------------*/
@@ -210,6 +229,32 @@ DRESULT disk_ioctl (
 {
 	switch (cmd)
 	{
+	case GET_SECTOR_COUNT:
+		{
+			if (pdrv >= FF_VOLUMES)
+			{
+				return RES_PARERR;
+			}
+
+			CDevice *pDevice =
+				CDeviceNameService::Get ()->GetDevice (s_pVolumeName[pdrv], TRUE);
+			if (pDevice != 0)
+			{
+				u64 ullSize = pDevice->GetSize ();
+				if (ullSize == (u64) -1)
+				{
+					return RES_PARERR;
+				}
+
+				*(LBA_t *) buff = (LBA_t) (ullSize / SECTOR_SIZE);
+			}
+			else
+			{
+				return RES_NOTRDY;
+			}
+		}
+		return RES_OK;
+
 	case CTRL_SYNC:
 		return RES_OK;
 

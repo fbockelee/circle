@@ -6,7 +6,7 @@
 //	Licensed under GPLv2
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2017  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2017-2022  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -41,7 +41,8 @@ CVCHIQSoundBaseDevice::CVCHIQSoundBaseDevice (CVCHIQDevice *pVCHIQDevice,
 	m_Destination (Destination),
 	m_State (VCHIQSoundCreated),
 	m_VCHIInstance (0),
-	m_hService (0)
+	m_hService (0),
+	m_Controller (this, Destination)
 {
 	//assert (44100 <= nSampleRate && nSampleRate <= 48000);
 	assert (Destination < VCHIQSoundDestinationUnknown);
@@ -51,7 +52,9 @@ CVCHIQSoundBaseDevice::CVCHIQSoundBaseDevice (CVCHIQDevice *pVCHIQDevice,
 
 CVCHIQSoundBaseDevice::~CVCHIQSoundBaseDevice (void)
 {
-	assert (0);
+	assert (m_State <= VCHIQSoundIdle);
+
+	CDeviceNameService::Get ()->RemoveDevice ("sndvchiq", FALSE);
 }
 
 int CVCHIQSoundBaseDevice::GetRangeMin (void) const
@@ -247,9 +250,16 @@ void CVCHIQSoundBaseDevice::Cancel (void)
 	}
 
 	m_State = VCHIQSoundCancelled;
-	while (m_State == VCHIQSoundCancelled)
+	if (m_nWritePos - m_nCompletePos > 0)
 	{
-		CScheduler::Get ()->Yield ();
+		while (m_State == VCHIQSoundCancelled)
+		{
+			CScheduler::Get ()->Yield ();
+		}
+	}
+	else
+	{
+		m_State = VCHIQSoundTerminating;
 	}
 
 	assert (m_State == VCHIQSoundTerminating);
@@ -301,6 +311,11 @@ void CVCHIQSoundBaseDevice::SetControl (int nVolume, TVCHIQSoundDestination Dest
 		CLogger::Get ()->Write (FromVCHIQSound, LogWarning,
 					"Cannot set control (%d)", nResult);
 	}
+}
+
+CSoundController *CVCHIQSoundBaseDevice::GetController (void)
+{
+	return &m_Controller;
 }
 
 int CVCHIQSoundBaseDevice::CallMessage (VC_AUDIO_MSG_T *pMessage)

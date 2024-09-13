@@ -2,7 +2,7 @@
 // koptions.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2017  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2023  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -22,6 +22,7 @@
 
 #include <circle/bcmpropertytags.h>
 #include <circle/cputhrottle.h>
+#include <circle/types.h>
 
 class CKernelOptions
 {
@@ -38,12 +39,24 @@ public:
 	const char *GetKeyMap (void) const;
 
 	unsigned GetUSBPowerDelay (void) const;
+	boolean GetUSBFullSpeed (void) const;
+	boolean GetUSBBoost (void) const;
+	const char *GetUSBIgnore (void) const;		// defaults to empty string
+
+	const unsigned *GetUSBSoundChannels (void) const; // returns 2 values
 
 	const char *GetSoundDevice (void) const;	// defaults to empty string
 	unsigned GetSoundOption (void) const;
 
 	TCPUSpeed GetCPUSpeed (void) const;
 	unsigned GetSoCMaxTemp (void) const;
+	unsigned GetGPIOFanPin (void) const;		// returns 0, if not defined
+
+	const unsigned *GetTouchScreen (void) const;	// returns 4 values (nullptr if unset)
+
+	// for application-defined options:
+	const char *GetAppOptionString (const char *pOption, const char *pDefault = nullptr) const;
+	unsigned GetAppOptionDecimal (const char *pOption, unsigned nDefault = -1) const;
 
 	static CKernelOptions *Get (void);
 
@@ -52,7 +65,10 @@ private:
 
 	static char *GetOptionValue (char *pOption);	// returns value and terminates option with '\0'
 
-	static unsigned GetDecimal (char *pString);	// returns decimal value, -1 on error
+	static unsigned GetDecimal (const char *pString);	// returns decimal value, -1 on error
+
+	// fetches nCount comma-separated decimals from pString to pResult
+	static boolean GetDecimals (char *pString, unsigned *pResult, unsigned nCount);
 
 private:
 	TPropertyTagCommandLine m_TagCommandLine;
@@ -67,12 +83,30 @@ private:
 	char m_KeyMap[3];
 
 	unsigned m_nUSBPowerDelay;
+	boolean m_bUSBFullSpeed;
+	boolean m_bUSBBoost;
+	char m_USBIgnore[20];
+
+	unsigned m_USBSoundChannels[2];
 
 	char m_SoundDevice[20];
 	unsigned m_nSoundOption;
 
 	TCPUSpeed m_CPUSpeed;
 	unsigned m_nSoCMaxTemp;
+	unsigned m_nGPIOFanPin;
+
+	boolean m_bTouchScreenValid;
+	unsigned m_TouchScreen[4];
+
+	struct TAppOption
+	{
+		TAppOption	*pNext;
+		char		*pName;
+		char		*pValue;
+	};
+
+	TAppOption *m_pAppOptionList;
 
 	static CKernelOptions *s_pThis;
 };

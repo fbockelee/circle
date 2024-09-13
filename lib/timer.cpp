@@ -2,7 +2,7 @@
 // timer.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2023  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -42,8 +42,6 @@ struct TKernelTimer
 	void 		    *m_pContext;
 };
 
-extern "C" void DelayLoop (unsigned nCount);
-
 static const char FromTimer[] = "timer";
 
 const unsigned CTimer::s_nDaysOfMonth[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -60,7 +58,8 @@ CTimer::CTimer (CInterruptSystem *pInterruptSystem)
 	m_nMinutesDiff (0),
 	m_nMsDelay (200000),
 	m_nusDelay (m_nMsDelay / 1000),
-	m_pPeriodicHandler (0)
+	m_pUpdateTimeHandler (0),
+	m_nPeriodicHandlers (0)
 {
 	assert (s_pThis == 0);
 	s_pThis = this;
@@ -75,7 +74,7 @@ CTimer::~CTimer (void)
 #if AARCH == 32
 	asm volatile ("mcr p15, 0, %0, c14, c2, 1" :: "r" (0));
 #else
-	asm volatile ("msr CNTP_CTL_EL0, %0" :: "r" (0));
+	asm volatile ("msr CNTP_CTL_EL0, %0" :: "r" (0UL));
 #endif
 
 	m_pInterruptSystem->DisconnectIRQ (ARM_IRQLOCAL0_CNTPNS);
@@ -129,7 +128,7 @@ boolean CTimer::Initialize (void)
 	asm volatile ("mrs %0, CNTPCT_EL0" : "=r" (nCNTPCT));
 	asm volatile ("msr CNTP_CVAL_EL0, %0" :: "r" (nCNTPCT + m_nClockTicksPerHZTick));
 
-	asm volatile ("msr CNTP_CTL_EL0, %0" :: "r" (1));
+	asm volatile ("msr CNTP_CTL_EL0, %0" :: "r" (1UL));
 #endif
 #endif
 	
@@ -181,9 +180,10 @@ int CTimer::GetTimeZone (void) const
 
 boolean CTimer::SetTime (unsigned nTime, boolean bLocal)
 {
+	int nSecondsDiff = m_nMinutesDiff * 60;
+
 	if (!bLocal)
 	{
-		int nSecondsDiff = m_nMinutesDiff * 60;
 		if (    nSecondsDiff < 0
 		    && -nSecondsDiff > (int) nTime)
 		{
@@ -191,6 +191,12 @@ boolean CTimer::SetTime (unsigned nTime, boolean bLocal)
 		}
 
 		nTime += nSecondsDiff;
+	}
+
+	if (   m_pUpdateTimeHandler != 0
+	    && !(*m_pUpdateTimeHandler) (nTime - nSecondsDiff, GetUniversalTime ()))
+	{
+		return FALSE;
 	}
 
 	m_TimeSpinLock.Acquire ();
@@ -229,6 +235,44 @@ unsigned CTimer::GetClockTicks (void)
 	asm volatile ("mrs %0, CNTFRQ_EL0" : "=r" (nCNTFRQ));
 
 	return (unsigned) (nCNTPCT * CLOCKHZ / nCNTFRQ);
+#endif
+#endif
+}
+
+u64 CTimer::GetClockTicks64 (void)
+{
+#ifndef USE_PHYSICAL_COUNTER
+	PeripheralEntry ();
+
+	u32 hi = read32 (ARM_SYSTIMER_CHI);
+	u32 lo = read32 (ARM_SYSTIMER_CLO);
+
+	// double check hi value didn't change when retrieving lo...
+	if (hi != read32 (ARM_SYSTIMER_CHI)) {
+		hi = read32 (ARM_SYSTIMER_CHI);
+		lo = read32 (ARM_SYSTIMER_CLO);
+	}
+
+	PeripheralExit ();
+
+	return static_cast<u64> (hi) << 32 | lo;
+#else
+#if AARCH == 32
+	InstructionSyncBarrier ();
+
+	u32 nCNTPCTLow, nCNTPCTHigh;
+	asm volatile ("mrrc p15, 0, %0, %1, c14" : "=r" (nCNTPCTLow), "=r" (nCNTPCTHigh));
+
+	return static_cast<u64> (nCNTPCTHigh) << 32 | nCNTPCTLow;
+#else
+	InstructionSyncBarrier ();
+
+	u64 nCNTPCT;
+	asm volatile ("mrs %0, CNTPCT_EL0" : "=r" (nCNTPCT));
+	u64 nCNTFRQ;
+	asm volatile ("mrs %0, CNTFRQ_EL0" : "=r" (nCNTFRQ));
+
+	return nCNTPCT * CLOCKHZ / nCNTFRQ;
 #endif
 #endif
 }
@@ -453,8 +497,8 @@ void CTimer::PollKernelTimers (void)
 {
 	m_KernelTimerSpinLock.Acquire ();
 
-	TPtrListElement *pElement = m_KernelTimerList.GetFirst ();
-	while (pElement != 0)
+	TPtrListElement *pElement;
+	while ((pElement = m_KernelTimerList.GetFirst ()) != 0)
 	{
 		TKernelTimer *pTimer = (TKernelTimer *) m_KernelTimerList.GetPtr (pElement);
 		assert (pTimer != 0);
@@ -465,9 +509,7 @@ void CTimer::PollKernelTimers (void)
 			break;
 		}
 
-		TPtrListElement *pNextElement = m_KernelTimerList.GetNext (pElement);
 		m_KernelTimerList.Remove (pElement);
-		pElement = pNextElement;
 
 		m_KernelTimerSpinLock.Release ();
 
@@ -491,15 +533,14 @@ void CTimer::InterruptHandler (void)
 #ifndef USE_PHYSICAL_COUNTER
 	PeripheralEntry ();
 
-	//assert (read32 (ARM_SYSTIMER_CS) & (1 << 3));
-	
-	u32 nCompare = read32 (ARM_SYSTIMER_C3) + CLOCKHZ / HZ;
-	write32 (ARM_SYSTIMER_C3, nCompare);
-	if (nCompare < read32 (ARM_SYSTIMER_CLO))			// time may drift
+	u32 nCompare = read32 (ARM_SYSTIMER_C3);
+	do
 	{
-		nCompare = read32 (ARM_SYSTIMER_CLO) + CLOCKHZ / HZ;
+		nCompare += CLOCKHZ / HZ;
+
 		write32 (ARM_SYSTIMER_C3, nCompare);
 	}
+	while ((int) (nCompare - read32 (ARM_SYSTIMER_CLO)) < 2);	// time may drift
 
 	write32 (ARM_SYSTIMER_CS, 1 << 3);
 
@@ -535,9 +576,9 @@ void CTimer::InterruptHandler (void)
 
 	PollKernelTimers ();
 
-	if (m_pPeriodicHandler != 0)
+	for (unsigned i = 0; i < m_nPeriodicHandlers; i++)
 	{
-		(*m_pPeriodicHandler) ();
+		(*m_pPeriodicHandler[i]) ();
 	}
 }
 
@@ -564,11 +605,23 @@ void CTimer::TuneMsDelay (void)
 				nFactor / 100, nFactor % 100);
 }
 
+void CTimer::RegisterUpdateTimeHandler (TUpdateTimeHandler *pHandler)
+{
+	assert (m_pUpdateTimeHandler == 0);
+	m_pUpdateTimeHandler = pHandler;
+	assert (m_pUpdateTimeHandler != 0);
+}
+
 void CTimer::RegisterPeriodicHandler (TPeriodicTimerHandler *pHandler)
 {
-	assert (m_pPeriodicHandler == 0);
-	m_pPeriodicHandler = pHandler;
-	assert (m_pPeriodicHandler != 0);
+	assert (pHandler != 0);
+
+	assert (m_nPeriodicHandlers < TIMER_MAX_PERIODIC_HANDLERS);
+	m_pPeriodicHandler[m_nPeriodicHandlers] = pHandler;
+
+	DataSyncBarrier ();
+
+	m_nPeriodicHandlers++;
 }
 
 void CTimer::SimpleMsDelay (unsigned nMilliSeconds)

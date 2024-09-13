@@ -2,7 +2,7 @@
 // exceptionstub.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2020  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -85,6 +85,20 @@ void SecureMonitorHandler (u32 nFunction, u32 nParam);
 
 #else	// #if AARCH == 32
 
+#define AARCH64_OPCODE_BRANCH(distance)	(0x14000000 | (distance))
+#define AARCH64_DISTANCE(from, to)	((u32 *) &(to) - (u32 *) &(from))
+
+struct TVectorTable
+{
+	struct
+	{
+		u32	Branch;
+		u32	Dummy[31];
+	}
+	Vector[16];
+}
+PACKED;
+
 struct TAbortFrame
 {
 	u64	esr_el1;
@@ -101,6 +115,23 @@ PACKED;
 void ExceptionHandler (u64 nException, TAbortFrame *pFrame);
 void InterruptHandler (void);
 
+#if RASPPI >= 4
+
+// AArch64 FIQ handling needs an ARM stub loaded from config.txt on RPi 4. It is detected using
+// the following magic sign and establishes an EL3 exception vector table at the given address.
+
+#define ARMSTUB_FIQ_MAGIC_ADDR	0x000000D4	// magic sign is located here
+#define ARMSTUB_FIQ_MAGIC	0x53514946	// "FIQS"
+
+#define VECTOR_TABLE_EL3	0x00070000
+
+void SMCStub (void);
+void UnexpectedStub (void);
+
+void SecureMonitorHandler (u32 nFunction, u32 nParam);
+
+#endif	// #if RASPPI >= 4
+
 #endif
 
 // FIQ data
@@ -115,6 +146,8 @@ struct TFIQData
 PACKED;
 
 extern TFIQData FIQData;
+
+extern uintptr IRQReturnAddress;		// for profiling
 
 #ifdef __cplusplus
 }

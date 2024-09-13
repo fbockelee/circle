@@ -2,7 +2,7 @@
 // xhcidevice.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2019-2023  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -25,21 +25,25 @@
 #include <circle/timer.h>
 #include <circle/usb/usbrequest.h>
 #include <circle/bcmpciehostbridge.h>
+#include <circle/usb/xhcisharedmemallocator.h>
 #include <circle/usb/xhcimmiospace.h>
 #include <circle/usb/xhcislotmanager.h>
 #include <circle/usb/xhcieventmanager.h>
 #include <circle/usb/xhcicommandmanager.h>
 #include <circle/usb/xhciroothub.h>
 #include <circle/usb/xhci.h>
+#include <circle/sysconfig.h>
 #include <circle/types.h>
 
 class CXHCIDevice : public CUSBHostController	/// USB host controller interface (xHCI) driver
 {
 public:
-	CXHCIDevice (CInterruptSystem *pInterruptSystem, CTimer *pTimer);
+	CXHCIDevice (CInterruptSystem *pInterruptSystem, CTimer *pTimer,
+		     boolean bPlugAndPlay = FALSE, unsigned nDevice = 0,
+		     CXHCISharedMemAllocator *pSharedMemAllocator = 0);
 	~CXHCIDevice (void);
 
-	boolean Initialize (void);
+	boolean Initialize (boolean bScanDevices = TRUE);
 
 	void ReScanDevices (void);
 
@@ -62,16 +66,23 @@ public:
 #endif
 
 private:
-	void InterruptHandler (unsigned nVector);
-	static void InterruptStub (unsigned nVector, void *pParam);
+	void InterruptHandler (void);
+	static void InterruptStub (void *pParam);
 
 	boolean HWReset (void);
 
 private:
-	CBcmPCIeHostBridge m_PCIeHostBridge;
+	CInterruptSystem *m_pInterruptSystem;
+	boolean m_bInterruptConnected;
 
-	uintptr m_nSharedMemStart;
-	uintptr m_nSharedMemEnd;
+	unsigned m_nDevice;
+
+#if RASPPI == 4 && !defined (USE_XHCI_INTERNAL)
+	CBcmPCIeHostBridge m_PCIeHostBridge;
+#endif
+
+	CXHCISharedMemAllocator *m_pSharedMemAllocator;
+	boolean m_bOwnSharedMemAllocator;
 
 	CXHCIMMIOSpace *m_pMMIO;
 

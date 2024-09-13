@@ -2,7 +2,7 @@
 // usbkeyboard.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2018  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2023  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -23,6 +23,7 @@
 #include <circle/usb/usbhiddevice.h>
 #include <circle/input/keyboardbehaviour.h>
 #include <circle/usb/usbhid.h>
+#include <circle/numberpool.h>
 #include <circle/types.h>
 
 #define USBKEYB_REPORT_SIZE	8
@@ -30,6 +31,8 @@
 // The raw handler is called when the keyboard sends a status report (on status change and/or continously).
 typedef void TKeyStatusHandlerRaw (unsigned char	ucModifiers,	// see usbhid.h
 				   const unsigned char	RawKeys[6]);	// key code or 0 in each byte
+typedef void TKeyStatusHandlerRawEx (unsigned char	ucModifiers,	// see usbhid.h
+				   const unsigned char	RawKeys[6], void* arg);	// key code or 0 in each byte
 
 class CUSBKeyboardDevice : public CUSBHIDDevice
 {
@@ -49,8 +52,12 @@ public:
 
 	u8 GetLEDStatus (void) const;	// returns USB LED status to be handed-over to SetLEDs()
 
-	// raw mode (if this handler is registered the others are ignored)
-	void RegisterKeyStatusHandlerRaw (TKeyStatusHandlerRaw *pKeyStatusHandlerRaw);
+	// raw mode (if bMixedMode is FALSE, the cooked handlers are ignored)
+	void RegisterKeyStatusHandlerRaw (TKeyStatusHandlerRawEx *pKeyStatusHandlerRaw,
+					  boolean bMixedMode, void* pArg);
+	void RegisterKeyStatusHandlerRaw (TKeyStatusHandlerRaw *pKeyStatusHandlerRaw,
+					  boolean bMixedMode = FALSE);
+	void UnregisterKeyStatusHandlerRaw (void);
 
 	// works in cooked and raw mode
 	boolean SetLEDs (u8 ucStatus);		// must not be called in interrupt context
@@ -63,14 +70,16 @@ private:
 private:
 	CKeyboardBehaviour m_Behaviour;
 
-	TKeyStatusHandlerRaw *m_pKeyStatusHandlerRaw;
+	TKeyStatusHandlerRawEx *m_pKeyStatusHandlerRaw;
+	void* m_pKeyStatusHandlerRawArg;
+	boolean m_bMixedMode;
 
 	u8 m_LastReport[USBKEYB_REPORT_SIZE];
 
 	u8 m_ucLastLEDStatus;
 
 	unsigned m_nDeviceNumber;
-	static unsigned s_nDeviceNumber;
+	static CNumberPool s_DeviceNumberPool;
 };
 
 #endif

@@ -4,7 +4,7 @@
 // I2C slave detection method by Arjan van Vught <info@raspberrypi-dmx.nl>
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2017  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2017-2023  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -26,25 +26,48 @@
 #include <circle/stdarg.h>
 #include <assert.h>
 
+#if RASPPI < 4
+	#define MASTER_DEVICE_MIN	0
+	#define MASTER_DEVICE_MAX	2
+	#define MASTER_CONFIG_MIN	0
+	#define MASTER_CONFIG_MAX	0
+#elif RASPPI == 4
+	#define MASTER_DEVICE_MIN	0
+	#define MASTER_DEVICE_MAX	6
+	#define MASTER_CONFIG_MIN	0
+	#define MASTER_CONFIG_MAX	1
+#else
+	#define MASTER_DEVICE_MIN	0
+	#define MASTER_DEVICE_MAX	3
+	#define MASTER_CONFIG_MIN	0
+	#define MASTER_CONFIG_MAX	2
+#endif
+
 #define SLAVE_ADDRESS_MIN	0x03
 #define SLAVE_ADDRESS_MAX	0x77
 
 #define CLOCK_KHZ_MIN		5
 #define CLOCK_KHZ_DEFAULT	100
+#if RASPPI <= 4
 #define CLOCK_KHZ_MAX		2000
+#else
+#define CLOCK_KHZ_MAX		1000
+#endif
 
 
 const char CI2CShell::HelpMsg[] =
 	"\n"
-	"Command\t\tDescription\t\t\t\tAlias\n"
+	"Command\t\t Description\t\t\t\t\tAlias\n"
 	"\n"
-	"slave ADDRESS\tSet slave address (0x03-0x77)\n"
-	"clock KHZ\tSelect clock rate in KHz\n"
-	"detect [r|w]\tRead (default) or write detection\n"
-	"read COUNT\tRead and display COUNT bytes\t\trd\n"
-	"write BYTE...\tWrite byte(s)\t\t\t\twr\n"
-	"delay MS\tDelay MS milliseconds\n"
-	"reboot\t\tReboot the system\n"
+	"master DEV [CFG] Select master (0-%u) and configuration (0-%u)\n"
+	"slave ADDRESS\t Set slave address (0x03-0x77)\n"
+	"clock KHZ\t Select clock rate in KHz\n"
+	"detect [r|w]\t Read (default) or write detection\n"
+	"read COUNT\t Read and display COUNT bytes\t\t\trd\n"
+	"write BYTE...\t Write byte(s)\t\t\t\t\twr\n"
+	"delay MS\t Delay MS milliseconds\n"
+	"reboot\t\t Reboot the system\n"
+	"help [gpio]\t This help or GPIO mapping info\n"
 	"\n"
 	"WARNING: The write detection test may corrupt some devices (e.g. EEPROMs).\n"
 	"\t The read detection test may lock some write-only devices.\n"
@@ -54,10 +77,42 @@ const char CI2CShell::HelpMsg[] =
 	"Multiple commands can be entered on one line.\n"
 	"\n";
 
-CI2CShell::CI2CShell (CConsole *pConsole, CI2CMaster *pI2CMaster)
+const char CI2CShell::GPIOHelpMsg[] =
+	"\n"
+	"Master\t\tConfiguration\n"
+#if RASPPI <= 4
+	"\t\t0\t\t1\n"
+	"\n"
+	"\t\tSDA\tSCL\tSDA\tSCL\n"
+	"\n"
+	"0%s\n"
+	"1%s\n"
+	"2\n"
+#if RASPPI == 4
+	"3\t\tGPIO2\tGPIO3\tGPIO4\tGPIO5\n"
+	"4\t\tGPIO6\tGPIO7\tGPIO8\tGPIO9\n"
+	"5\t\tGPIO10\tGPIO11\tGPIO12\tGPIO13\n"
+	"6\t\tGPIO22\tGPIO23\n"
+#endif
+#else
+	"\t\t0\t\t1\t\t2\n"
+	"\n"
+	"\t\tSDA\tSCL\tSDA\tSCL\tSDA\tSCL\n"
+	"\n"
+	"0\t\tGPIO0\tGPIO1\tGPIO8\tGPIO9\n"
+	"1\t\tGPIO2\tGPIO3\tGPIO10\tGPIO11\n"
+	"2\t\tGPIO4\tGPIO5\tGPIO12\tGPIO13\n"
+	"3\t\tGPIO6\tGPIO7\tGPIO14\tGPIO15\tGPIO22\tGPIO23\n"
+#endif
+	"\n"
+	"GPIO# are chip numbers, not the position on the header!\n"
+	"\n";
+
+CI2CShell::CI2CShell (CConsole *pConsole, CUSBHCIDevice *pUSBHCI)
 :	m_pConsole (pConsole),
-	m_pI2CMaster (pI2CMaster),
+	m_pUSBHCI (pUSBHCI),
 	m_bContinue (TRUE),
+	m_pI2CMaster (0),
 	m_nI2CClockHz (CLOCK_KHZ_DEFAULT * 1000),
 	m_ucSlaveAddress (INVALID_SLAVE)
 {
@@ -66,16 +121,40 @@ CI2CShell::CI2CShell (CConsole *pConsole, CI2CMaster *pI2CMaster)
 CI2CShell::~CI2CShell (void)
 {
 	m_pConsole = 0;
+	m_pUSBHCI = 0;
+
+	delete m_pI2CMaster;
 	m_pI2CMaster = 0;
 }
 
 void CI2CShell::Run (void)
 {
+	CString MasterMsg ("Select master first!");
+
+#if RASPPI < 4
+	m_nMasterDevice = CMachineInfo::Get ()->GetDevice (DeviceI2CMaster);
+	m_nMasterConfig = MASTER_CONFIG_MIN;
+
+	assert (m_pI2CMaster == 0);
+	m_pI2CMaster = new CI2CMaster (m_nMasterDevice, FALSE, m_nMasterConfig);
+	assert (m_pI2CMaster != 0);
+
+	if (m_pI2CMaster->Initialize ())
+	{
+		MasterMsg.Format ("Using master #%u", m_nMasterDevice);
+	}
+	else
+	{
+		delete m_pI2CMaster;
+		m_pI2CMaster = 0;
+	}
+#endif
+
 	Print ("\n\nI2C Shell\n"
-	       "Using master #%u\n"
+	       "%s\n"
 	       "Default clock rate is %u KHz\n"
 	       "Enter \"help\" for help!\n\n",
-	       CMachineInfo::Get ()->GetDevice (DeviceI2CMaster),
+	       (const char *) MasterMsg,
 	       m_nI2CClockHz / 1000);
 
 	while (m_bContinue)
@@ -88,6 +167,13 @@ void CI2CShell::Run (void)
 			if (((const char *) Command)[0] == '#')
 			{
 				break;
+			}
+			else if (Command.Compare ("master") == 0)
+			{
+				if (!Master ())
+				{
+					break;
+				}
 			}
 			else if (Command.Compare ("slave") == 0)
 			{
@@ -139,7 +225,10 @@ void CI2CShell::Run (void)
 			}
 			else if (Command.Compare ("help") == 0)
 			{
-				Print (HelpMsg);
+				if (!Help ())
+				{
+					break;
+				}
 			}
 			else
 			{
@@ -148,6 +237,49 @@ void CI2CShell::Run (void)
 			}
 		}
 	}
+}
+
+boolean CI2CShell::Master (void)
+{
+	m_nMasterDevice = GetNumber ("Master device", MASTER_DEVICE_MIN, MASTER_DEVICE_MAX);
+	if (m_nMasterDevice == INVALID_NUMBER)
+	{
+		return FALSE;
+	}
+
+	m_nMasterConfig  = GetNumber ("Master configuration",
+				      MASTER_CONFIG_MIN, MASTER_CONFIG_MAX, TRUE);
+	if (m_nMasterConfig == INVALID_NUMBER)
+	{
+		m_nMasterConfig = MASTER_CONFIG_MIN;
+	}
+
+	delete m_pI2CMaster;
+	m_pI2CMaster = 0;
+
+	m_ucSlaveAddress = INVALID_SLAVE;
+
+	if (   m_nMasterDevice <= 1
+	    && m_nMasterDevice != CMachineInfo::Get ()->GetDevice (DeviceI2CMaster))
+	{
+		Print ("Master is not supported: I2C%u[%u]\n", m_nMasterDevice, m_nMasterConfig);
+		return FALSE;
+	}
+
+	m_pI2CMaster = new CI2CMaster (m_nMasterDevice, FALSE, m_nMasterConfig);
+	assert (m_pI2CMaster != 0);
+
+	if (!m_pI2CMaster->Initialize ())
+	{
+		Print ("Master is not supported: I2C%u[%u]\n", m_nMasterDevice, m_nMasterConfig);
+
+		delete m_pI2CMaster;
+		m_pI2CMaster = 0;
+
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 boolean CI2CShell::Slave (void)
@@ -197,7 +329,12 @@ boolean CI2CShell::Detect (void)
 		}
 	}
 
-	assert (m_pI2CMaster != 0);
+	if (m_pI2CMaster == 0)
+	{
+		Print ("Master not selected\n");
+		return FALSE;
+	}
+
 	m_pI2CMaster->SetClock (m_nI2CClockHz);
 
 	u8 ucFirstSlaveAddress = INVALID_SLAVE;
@@ -261,13 +398,18 @@ boolean CI2CShell::Read (void)
 		return FALSE;
 	}
 
+	if (m_pI2CMaster == 0)
+	{
+		Print ("Master not selected\n");
+		return FALSE;
+	}
+
 	if (m_ucSlaveAddress == INVALID_SLAVE)
 	{
 		Print ("Slave address not set\n");
 		return FALSE;
 	}
 
-	assert (m_pI2CMaster != 0);
 	m_pI2CMaster->SetClock (m_nI2CClockHz);
 
 	int nResult = m_pI2CMaster->Read (m_ucSlaveAddress, Buffer, nCount);
@@ -319,13 +461,18 @@ boolean CI2CShell::Write (void)
 		return FALSE;
 	}
 
+	if (m_pI2CMaster == 0)
+	{
+		Print ("Master not selected\n");
+		return FALSE;
+	}
+
 	if (m_ucSlaveAddress == INVALID_SLAVE)
 	{
 		Print ("Slave address not set\n");
 		return FALSE;
 	}
 
-	assert (m_pI2CMaster != 0);
 	m_pI2CMaster->SetClock (m_nI2CClockHz);
 
 	int nResult = m_pI2CMaster->Write (m_ucSlaveAddress, Buffer, nCount);
@@ -351,21 +498,67 @@ boolean CI2CShell::Delay (void)
 	return TRUE;
 }
 
-unsigned CI2CShell::GetNumber (const char *pName, unsigned nMinimum, unsigned nMaximum)
+boolean CI2CShell::Help (void)
+{
+	CString Token;
+	if (GetToken (&Token))
+	{
+		if (Token.Compare ("gpio") == 0)
+		{
+#if RASPPI <= 4
+			if (CMachineInfo::Get ()->GetDevice (DeviceI2CMaster) == 0)
+			{
+				Print (GPIOHelpMsg, "\t\tGPIO0\tGPIO1", "");
+			}
+			else
+			{
+				Print (GPIOHelpMsg, "", "\t\tGPIO2\tGPIO3");
+			}
+#else
+			Print (GPIOHelpMsg);
+#endif
+
+			return TRUE;
+		}
+		else
+		{
+			UnGetToken (Token);
+		}
+	}
+
+	Print (HelpMsg, MASTER_DEVICE_MAX, MASTER_CONFIG_MAX);
+
+	return TRUE;
+}
+
+unsigned CI2CShell::GetNumber (const char *pName, unsigned nMinimum, unsigned nMaximum,
+			       boolean bOptional)
 {
 	assert (pName != 0);
 
 	CString Token;
 	if (!GetToken (&Token))
 	{
-		Print ("%s expected\n", pName);
+		if (!bOptional)
+		{
+			Print ("%s expected\n", pName);
+		}
+
 		return INVALID_NUMBER;
 	}
 
 	unsigned nValue = ConvertNumber (Token);
 	if (nValue == INVALID_NUMBER)
 	{
-		Print ("Invalid number: %s\n", (const char *) Token);
+		if (!bOptional)
+		{
+			Print ("Invalid number: %s\n", (const char *) Token);
+		}
+		else
+		{
+			UnGetToken (Token);
+		}
+
 		return INVALID_NUMBER;
 	}
 
@@ -384,10 +577,12 @@ void CI2CShell::PrintI2CError (int nStatus)
 {
 	switch (nStatus)
 	{
-	case -I2C_MASTER_INALID_PARM:	Print ("Invalid parameter");		break;
+	case -I2C_MASTER_INALID_PARM:	Print ("Invalid parameter\n");		break;
 	case -I2C_MASTER_ERROR_NACK:	Print ("Negative ACK\n");		break;
 	case -I2C_MASTER_ERROR_CLKT:	Print ("Clock stretch timeout\n");	break;
 	case -I2C_MASTER_DATA_LEFT:	Print ("Short transfer\n");		break;
+	case -I2C_MASTER_TIMEOUT:	Print ("Transfer timeout");		break;
+	case -I2C_MASTER_BUS_BUSY:	Print ("Bus is busy");			break;
 	case 0:				Print ("No data\n");			break;
 	default:			Print ("Unknown I2C error\n");		break;
 	}
@@ -399,19 +594,41 @@ void CI2CShell::ReadLine (void)
 
 	do
 	{
+		CString MasterMsg;
+		if (m_pI2CMaster != 0)
+		{
+			if (m_nMasterConfig == 0)
+			{
+				MasterMsg.Format ("%u", m_nMasterDevice);
+			}
+			else
+			{
+				MasterMsg.Format ("%u[%u]", m_nMasterDevice, m_nMasterConfig);
+			}
+		}
+
 		if (m_ucSlaveAddress == INVALID_SLAVE)
 		{
-			Print ("I2C %u> ", m_nI2CClockHz/1000);
+			Print ("I2C%s %u> ", (const char *) MasterMsg, m_nI2CClockHz/1000);
 		}
 		else
 		{
-			Print ("I2C %u 0x%02X> ", m_nI2CClockHz/1000, (unsigned) m_ucSlaveAddress);
+			Print ("I2C%s %u 0x%02X> ", (const char *) MasterMsg,
+			       m_nI2CClockHz/1000, (unsigned) m_ucSlaveAddress);
 		}
 
 		assert (m_pConsole != 0);
 		while ((nResult = m_pConsole->Read (m_LineBuffer, sizeof m_LineBuffer-1)) <= 0)
 		{
-			// just repeat
+			if (m_pUSBHCI != 0)
+			{
+				boolean bUpdated = m_pUSBHCI->UpdatePlugAndPlay ();
+
+				if (bUpdated)
+				{
+					m_pConsole->UpdatePlugAndPlay ();
+				}
+			}
 		}
 
 		assert (nResult < (int) sizeof m_LineBuffer);

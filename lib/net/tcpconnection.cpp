@@ -13,7 +13,7 @@
 //	user timeout
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2015-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2015-2024  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -124,11 +124,26 @@ PACKED;
 
 unsigned CTCPConnection::s_nConnections = 0;
 
+const char *CTCPConnection::s_pStateName[] =	// must match TTCPState
+{
+	"CLOSED",
+	"LISTEN",
+	"SYN-SENT",
+	"SYN-RECEIVED",
+	"ESTABLISHED",
+	"FIN-WAIT-1",
+	"FIN-WAIT-2",
+	"CLOSE-WAIT",
+	"CLOSING",
+	"LAST-ACK",
+	"TIME-WAIT"
+};
+
 static const char FromTCP[] = "tcp";
 
 CTCPConnection::CTCPConnection (CNetConfig	*pNetConfig,
 				CNetworkLayer	*pNetworkLayer,
-				CIPAddress	&rForeignIP,
+				const CIPAddress &rForeignIP,
 				u16		 nForeignPort,
 				u16		 nOwnPort)
 :	CNetConnection (pNetConfig, pNetworkLayer, rForeignIP, nForeignPort, nOwnPort, IPPROTO_TCP),
@@ -213,8 +228,17 @@ CTCPConnection::~CTCPConnection (void)
 		StopTimer (nTimer);
 	}
 
+	// ensure no task is waiting any more
+	m_Event.Set ();
+	m_TxEvent.Set ();
+
 	assert (s_nConnections > 0);
 	s_nConnections--;
+}
+
+const char *CTCPConnection::GetStateName (void) const
+{
+	return s_pStateName[m_State];
 }
 
 int CTCPConnection::Connect (void)
@@ -395,8 +419,8 @@ int CTCPConnection::Send (const void *pData, unsigned nLength, int nFlags)
 
 	if (!(nFlags & MSG_DONTWAIT))
 	{
-		m_Event.Clear ();
-		m_Event.Wait ();
+		m_TxEvent.Clear ();
+		m_TxEvent.Wait ();
 
 		if (m_nErrno < 0)
 		{
@@ -459,7 +483,7 @@ int CTCPConnection::Receive (void *pBuffer, int nFlags)
 }
 
 int CTCPConnection::SendTo (const void *pData, unsigned nLength, int nFlags,
-			    CIPAddress	&rForeignIP, u16 nForeignPort)
+			    const CIPAddress &rForeignIP, u16 nForeignPort)
 {
 	// ignore rForeignIP and nForeignPort
 	return Send (pData, nLength, nFlags);
@@ -566,6 +590,14 @@ void CTCPConnection::Process (void)
 		m_RetransmissionQueue.Write (TempBuffer, nLength);
 	}
 
+	// pacing transmit
+	if (   (   m_State == TCPStateEstablished
+		|| m_State == TCPStateCloseWait)
+	    && m_TxQueue.IsEmpty ())
+	{
+		m_TxEvent.Set ();
+	}
+
 	if (m_bRetransmit)
 	{
 #ifdef TCP_DEBUG
@@ -592,8 +624,7 @@ void CTCPConnection::Process (void)
 		m_RetransmissionQueue.Read (TempBuffer, nLength);
 
 		unsigned nFlags = TCP_FLAG_ACK;
-		if (   m_RetransmissionQueue.IsEmpty ()
-		    && m_TxQueue.IsEmpty ())
+		if (m_TxQueue.IsEmpty ())
 		{
 			nFlags |= TCP_FLAG_PUSH;
 		}
@@ -878,6 +909,8 @@ int CTCPConnection::PacketReceived (const void	*pPacket,
 					{
 						SendSegment (TCP_FLAG_RESET, m_nSND_NXT);
 						NEW_STATE (TCPStateClosed);
+						m_nErrno = -1;
+						m_Event.Set ();
 					}
 
 					if (nDataLength > 0)
@@ -1055,8 +1088,6 @@ int CTCPConnection::PacketReceived (const void	*pPacket,
 
 					// next transmission starts with this count
 					m_nRetransmissionCount = MAX_RETRANSMISSIONS;
-
-					m_Event.Set ();
 				}
 
 				if (   m_State == TCPStateFinWait1
@@ -1222,6 +1253,7 @@ int CTCPConnection::PacketReceived (const void	*pPacket,
 			}
 			break;
 
+		case TCPStateSynReceived:	// this state not in RFC 793
 		case TCPStateCloseWait:
 		case TCPStateClosing:
 		case TCPStateLastAck:
@@ -1330,6 +1362,10 @@ int CTCPConnection::NotificationReceived (TICMPNotificationType  Type,
 	}
 
 	m_nErrno = -1;
+
+	StopTimer (TCPTimerRetransmission);
+	NEW_STATE (TCPStateTimeWait);
+	StartTimer (TCPTimerTimeWait, HZ_TIMEWAIT);
 
 	m_Event.Set ();
 
@@ -1573,25 +1609,11 @@ void CTCPConnection::DumpStatus (void)
 
 TTCPState CTCPConnection::NewState (TTCPState State, unsigned nLine)
 {
-	const static char *StateName[] =	// must match TTCPState
-	{
-		"CLOSED",
-		"LISTEN",
-		"SYN-SENT",
-		"SYN-RECEIVED",
-		"ESTABLISHED",
-		"FIN-WAIT-1",
-		"FIN-WAIT-2",
-		"CLOSE-WAIT",
-		"CLOSING",
-		"LAST-ACK",
-		"TIME-WAIT"
-	};
+	assert (m_State < sizeof s_pStateName / sizeof s_pStateName[0]);
+	assert (State < sizeof s_pStateName / sizeof s_pStateName[0]);
 
-	assert (m_State < sizeof StateName / sizeof StateName[0]);
-	assert (State < sizeof StateName / sizeof StateName[0]);
-
-	CLogger::Get ()->Write (FromTCP, LogDebug, "State %s -> %s at line %u", StateName[m_State], StateName[State], nLine);
+	CLogger::Get ()->Write (FromTCP, LogDebug, "State %s -> %s at line %u",
+				s_pStateName[m_State], s_pStateName[State], nLine);
 
 	return m_State = State;
 }

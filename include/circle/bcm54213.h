@@ -8,7 +8,7 @@
 //	Licensed under GPLv2
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2019-2020  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -79,6 +79,9 @@ public:
 
 	const CMACAddress *GetMACAddress (void) const;
 
+	// returns TRUE if TX ring has currently free buffers
+	boolean IsSendFrameAdvisable (void);
+
 	boolean SendFrame (const void *pBuffer, unsigned nLength);
 
 	// pBuffer must have size FRAME_BUFFER_SIZE
@@ -126,7 +129,7 @@ private:
 	void enable_dma(u32 dma_ctrl);
 
 	// Tx queues, rings and buffers
-	void init_tx_queues (void);
+	void init_tx_queues (bool enable);
 	void init_tx_ring(unsigned index, unsigned size, unsigned start_ptr, unsigned end_ptr);
 	TGEnetCB *get_txcb(TGEnetTxRing *ring);
 	unsigned tx_reclaim(TGEnetTxRing *ring);
@@ -182,6 +185,8 @@ private:
 	boolean m_crc_fwd_en;		// has FCS to be removed?
 
 	// PHY status
+	int m_phy_id;			// probed address of this PHY
+
 	int m_link;			// 1: link is up
 	int m_speed;			// 10, 100, 1000
 	int m_duplex;			// 1: full duplex

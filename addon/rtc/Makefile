@@ -4,7 +4,7 @@
 
 CIRCLEHOME = ../..
 
-OBJS	= mcp7941x.o
+OBJS	= firmwarertc.o mcp7941x.o
 
 librtc.a: $(OBJS)
 	@echo "  AR    $@"
@@ -12,3 +12,5 @@ librtc.a: $(OBJS)
 	@$(AR) cr $@ $(OBJS)
 
 include $(CIRCLEHOME)/Rules.mk
+
+-include $(DEPS)

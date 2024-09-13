@@ -2,7 +2,7 @@
 // spimasterdma.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2016-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2016-2022  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -47,12 +47,12 @@
 #define CS_CLEAR_TX	(1 << 4)
 #define CS_CPOL__SHIFT	3
 #define CS_CPHA__SHIFT	2
-#define CS_CS		(1 << 0)
+#define CS_CS		(3 << 0)
 #define CS_CS__SHIFT	0
 
 CSPIMasterDMA::CSPIMasterDMA (CInterruptSystem *pInterruptSystem,
 			      unsigned nClockSpeed, unsigned CPOL, unsigned CPHA,
-			      boolean bDMAChannelLite)
+			      boolean bDMAChannelLite, unsigned nDevice)
 :	m_nClockSpeed (nClockSpeed),
 	m_CPOL (CPOL),
 	m_CPHA (CPHA),
@@ -66,6 +66,7 @@ CSPIMasterDMA::CSPIMasterDMA (CInterruptSystem *pInterruptSystem,
 	m_nCoreClockRate (CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE)),
 	m_pCompletionRoutine (0)
 {
+	assert (nDevice == 0);
 	assert (m_nCoreClockRate > 0);
 }
 
@@ -140,7 +141,7 @@ void CSPIMasterDMA::StartWriteRead (unsigned	nChipSelect,
 	assert (nCount <= 0xFFFF);
 	write32 (ARM_SPI0_DLEN, nCount);
 
-	assert (nChipSelect <= 1);
+	assert (nChipSelect <= 1 || nChipSelect == ChipSelectNone);
 	write32 (ARM_SPI0_CS,   (read32 (ARM_SPI0_CS) & ~CS_CS)
 			      | (nChipSelect << CS_CS__SHIFT)
 			      | CS_CLEAR_RX | CS_CLEAR_TX
@@ -195,7 +196,7 @@ int CSPIMasterDMA::WriteReadSync (unsigned    nChipSelect,
 	assert (nCount <= 0xFFFF);
 	write32 (ARM_SPI0_DLEN, nCount);
 
-	assert (nChipSelect <= 1);
+	assert (nChipSelect <= 1 || nChipSelect == ChipSelectNone);
 	write32 (ARM_SPI0_CS,   (read32 (ARM_SPI0_CS) & ~CS_CS)
 			      | (nChipSelect << CS_CS__SHIFT)
 			      | CS_CLEAR_RX | CS_CLEAR_TX

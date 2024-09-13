@@ -37,12 +37,13 @@ print("Flashing with baudrate of "+ str(flashbaud) + "...")
 sys.stdout.flush()
 
 try:
+    ser.write(b"R")
     blocksize = math.trunc(flashbaud / 5)
     offset = 0
     while offset < size:
         if sys.stdout.isatty():
             percent = math.trunc(offset * 100 / size)
-            print("\r" + str(percent) + "%"),
+            print("\r" + str(percent) + "%", end='')
             sys.stdout.flush()
         readlen = blocksize
         if size < readlen:
@@ -51,7 +52,7 @@ try:
         ser.write(data)
         offset += readlen
     if sys.stdout.isatty():
-        print("\r"),
+        print("\r", end='')
     print("Completed!\nRunning app...")
     sys.stdout.flush()
     time.sleep(1)
@@ -59,8 +60,14 @@ try:
 except Exception:
     print("ERROR: Serial port disconnected. Check connections!")
     F.close()
+    time.sleep(0.2)
+    ser.flush()
+    time.sleep(0.2)
     ser.close()
     exit()
 
 F.close()
+time.sleep(0.2)
+ser.flush()
+time.sleep(0.2)
 ser.close()

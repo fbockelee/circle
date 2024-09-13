@@ -2,7 +2,7 @@
 // networklayer.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2015-2017  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2015-2024  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -156,18 +156,12 @@ boolean CNetworkLayer::Send (const CIPAddress &rReceiver, const void *pPacket, u
 	pHeader->nTotalLength         = le2be16 ((u16) nPacketLength);
 	pHeader->nIdentification      = BE (IP_IDENTIFICATION_DEFAULT);
 	pHeader->nFlagsFragmentOffset = IP_FLAGS_DF | BE (IP_FRAGMENT_OFFSET_FIRST);
-	pHeader->nTTL                 = IP_TTL_DEFAULT;
+	pHeader->nTTL                 = rReceiver.IsMulticast () ? IP_TTL_MULTICAST : IP_TTL_DEFAULT;
 	pHeader->nProtocol            = (u8) nProtocol;
 
 	assert (m_pNetConfig != 0);
 	const CIPAddress *pOwnIPAddress = m_pNetConfig->GetIPAddress ();
 	assert (pOwnIPAddress != 0);
-
-	if (   pOwnIPAddress->IsNull ()
-	    && !rReceiver.IsBroadcast ())
-	{
-		return FALSE;
-	}
 
 	pOwnIPAddress->CopyTo (pHeader->SourceAddress);
 
@@ -180,9 +174,18 @@ boolean CNetworkLayer::Send (const CIPAddress &rReceiver, const void *pPacket, u
 	assert (nLength > 0);
 	memcpy (PacketBuffer+sizeof (TIPHeader), pPacket, nLength);
 
+	if (   pOwnIPAddress->IsNull ()
+	    && !rReceiver.IsBroadcast ())
+	{
+		SendFailed (ICMP_CODE_DEST_NET_UNREACH, PacketBuffer, nPacketLength);
+
+		return FALSE;
+	}
+
 	CIPAddress GatewayIP;
 	const CIPAddress *pNextHop = &rReceiver;
-	if (!pOwnIPAddress->OnSameNetwork (rReceiver, m_pNetConfig->GetNetMask ()))
+	if (   !rReceiver.IsMulticast ()
+	    && !pOwnIPAddress->OnSameNetwork (rReceiver, m_pNetConfig->GetNetMask ()))
 	{
 		const u8 *pGateway = m_RouteCache.GetRoute (rReceiver.Get ());
 		if (pGateway != 0)
@@ -196,6 +199,8 @@ boolean CNetworkLayer::Send (const CIPAddress &rReceiver, const void *pPacket, u
 			pNextHop = m_pNetConfig->GetDefaultGateway ();
 			if (pNextHop->IsNull ())
 			{
+				SendFailed (ICMP_CODE_DEST_NET_UNREACH, PacketBuffer, nPacketLength);
+
 				return FALSE;
 			}
 		}
@@ -288,4 +293,10 @@ const u8 *CNetworkLayer::GetGateway (const u8 *pDestIP) const
 	assert (pDefaultGateway != 0);
 
 	return pDefaultGateway->Get ();
+}
+
+void CNetworkLayer::SendFailed (unsigned nICMPCode, const void *pReturnedPacket, unsigned nLength)
+{
+	assert (m_pICMPHandler != 0);
+	m_pICMPHandler->DestinationUnreachable (nICMPCode, pReturnedPacket, nLength);
 }

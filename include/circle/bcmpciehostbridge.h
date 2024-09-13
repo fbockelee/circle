@@ -7,7 +7,7 @@
 //	Licensed under GPL-2.0
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2019-2020  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -61,6 +61,11 @@ public:
 	boolean ConnectMSI (TPCIeMSIHandler *pHandler, void *pParam);
 	void DisconnectMSI (void);
 
+	static u64 GetDMAAddress (void)		// returns base address of the inbound memory window
+	{
+		return s_nDMAAddress;
+	}
+
 #ifndef NDEBUG
 	void DumpStatus (unsigned nSlot, unsigned nFunc);
 #endif
@@ -106,14 +111,25 @@ private:
 	void msleep (unsigned ms);
 	static int ilog2 (u64 v);
 
+#if RASPPI >= 5
+	void pcie_set_tc_qos(void);
+	void pcie_config_clkreq(void);
+	void pcie_munge_pll(void);
+
+	int pcie_mdio_read(u8 port, u8 regad, u32 *val);
+	int pcie_mdio_write(u8 port, u8 regad, u16 wrdata);
+	static u32 pcie_mdio_form_pkt(int port, int regad, int cmd);
+
+	int reset_assert(unsigned long id);
+	int reset_deassert(unsigned long id);
+	int rescal_reset_deassert(void);
+#endif
+
 private:
 	CInterruptSystem	*m_pInterrupt;
-	CTimer			*m_pTimer;
 
 	uintptr			 m_base;		// mmio base address
 	unsigned		 m_rev;			// controller revision
-	const int		*m_reg_offsets;
-	const int		*m_reg_field_info;
 
 	TPCIeMemoryWindow	 m_out_wins[1];		// outbound window
 	int			 m_num_out_wins;
@@ -125,6 +141,8 @@ private:
 
 	u64			 m_msi_target_addr;
 	TPCIeMSIData		*m_msi;
+
+	static u64		 s_nDMAAddress;
 };
 
 #endif

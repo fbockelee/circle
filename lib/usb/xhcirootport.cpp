@@ -2,7 +2,7 @@
 // xhcirootport.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2019-2024  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 #include <circle/usb/xhcirootport.h>
 #include <circle/usb/xhcidevice.h>
 #include <circle/logger.h>
+#include <circle/timer.h>
 #include <assert.h>
 
 static const char From[] = "xhciroot";
@@ -52,7 +53,7 @@ boolean CXHCIRootPort::Initialize (void)
 	assert (m_nPortIndex < XHCI_CONFIG_MAX_PORTS);
 	if (XHCI_IS_USB2_PORT (m_nPortIndex+1))
 	{
-		if (!Reset (50000))
+		if (!Reset (100000))
 		{
 			CLogger::Get ()->Write (From, LogWarning,
 						"Port %u: Reset failed", m_nPortIndex+1);
@@ -71,8 +72,19 @@ boolean CXHCIRootPort::Initialize (void)
 		}
 	}
 
+	CTimer::Get ()->MsDelay (100);		// give device after reset some time to settle
+
+	TUSBSpeed PortSpeed = GetPortSpeed ();
+	if (PortSpeed == USBSpeedUnknown)
+	{
+		CLogger::Get ()->Write (From, LogWarning,
+					"Port %u: Unknown speed", m_nPortIndex+1);
+
+		return FALSE;
+	}
+
 	assert (m_pUSBDevice == 0);
-	m_pUSBDevice = new CXHCIUSBDevice (m_pXHCIDevice, GetPortSpeed (), this);
+	m_pUSBDevice = new CXHCIUSBDevice (m_pXHCIDevice, PortSpeed, this);
 	assert (m_pUSBDevice != 0);
 
 	if (!m_pUSBDevice->Initialize ())
@@ -159,14 +171,50 @@ TUSBSpeed CXHCIRootPort::GetPortSpeed (void)
 	return XHCI_PSI_TO_USB_SPEED (uchSpeedID);
 }
 
-boolean CXHCIRootPort::ReScanDevices (void)	// TODO
+boolean CXHCIRootPort::ReScanDevices (void)
 {
+	if (m_pUSBDevice != 0)
+	{
+		return m_pUSBDevice->ReScanDevices ();
+	}
+
+	if (!Initialize ())
+	{
+		return FALSE;
+	}
+
+	if (!Configure ())
+	{
+		return FALSE;
+	}
+
 	return TRUE;
 }
 
-boolean CXHCIRootPort::RemoveDevice (void)	// TODO
+boolean CXHCIRootPort::RemoveDevice (void)
 {
-	return FALSE;
+	delete m_pUSBDevice;
+	m_pUSBDevice = 0;
+
+	return TRUE;
+}
+
+void CXHCIRootPort::HandlePortStatusChange (void)
+{
+	if (IsConnected ())
+	{
+		if (m_pUSBDevice == 0)
+		{
+			ReScanDevices ();
+		}
+	}
+	else
+	{
+		if (m_pUSBDevice != 0)
+		{
+			RemoveDevice ();
+		}
+	}
 }
 
 void CXHCIRootPort::StatusChanged (void)
@@ -186,6 +234,13 @@ void CXHCIRootPort::StatusChanged (void)
 			     nPortSC & ~XHCI_REG_OP_PORTS_PORTSC_PED);	// do not disable port
 
 	m_SpinLock.Release ();
+
+	assert (m_pXHCIDevice != 0);
+	if (   m_pXHCIDevice->IsPlugAndPlay ()
+	    && (nPortSC & XHCI_REG_OP_PORTS_PORTSC_CSC))
+	{
+		m_pXHCIDevice->PortStatusChanged (this);
+	}
 }
 
 #ifndef NDEBUG

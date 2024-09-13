@@ -4,7 +4,7 @@
 // Memory addresses and sizes
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2020  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -39,7 +39,6 @@
 
 #define PAGE_SIZE		4096				// page size used by us
 
-#define KERNEL_STACK_SIZE	0x20000				// all sizes must be a multiple of 16K
 #define EXCEPTION_STACK_SIZE	0x8000
 #define PAGE_TABLE1_SIZE	0x4000
 #define PAGE_RESERVE		(4 * MEGABYTE)
@@ -74,6 +73,10 @@
 #endif
 
 #if RASPPI >= 4
+// high memory region (memory >= 3 GB is not safe to be DMA-able and is not used)
+#define MEM_HIGHMEM_START		GIGABYTE
+#define MEM_HIGHMEM_END			(3 * GIGABYTE - 1)
+
 // PCIe memory range (outbound)
 #define MEM_PCIE_RANGE_START		0x600000000ULL
 #define MEM_PCIE_RANGE_SIZE		0x4000000ULL

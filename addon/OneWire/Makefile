@@ -4,7 +4,7 @@
 
 CIRCLEHOME = ../..
 
-OBJS	= OneWire.o
+OBJS	= OneWire.o ds18x20.o
 
 libonewire.a: $(OBJS)
 	@echo "  AR    $@"
@@ -12,3 +12,5 @@ libonewire.a: $(OBJS)
 	@$(AR) cr $@ $(OBJS)
 
 include $(CIRCLEHOME)/Rules.mk
+
+-include $(DEPS)

@@ -2,7 +2,7 @@
 // kernel.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2018  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2021  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -18,13 +18,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 #include "kernel.h"
+#include <circle/timer.h>
 
 CKernel::CKernel (void)
-:
-#if AARCH != 64			// non-MMU mode currently does not work with AArch64
-	m_Memory (FALSE),	// set this to TRUE to enable MMU and to boost performance
-#endif
-	m_Screen (m_Options.GetWidth (), m_Options.GetHeight ())
+:	m_Screen (m_Options.GetWidth (), m_Options.GetHeight ())
 {
 }
 
@@ -60,20 +57,13 @@ TShutdownMode CKernel::Run (void)
 		m_Screen.SetPixel (m_Screen.GetWidth ()-nPosX-1, nPosY, NORMAL_COLOR);
 	}
 
-	// check the blink frequency without and with MMU (see option in constructor above)
 	while (1)
 	{
 		m_ActLED.On ();
-		for (volatile unsigned i = 1; i <= 5000000; i++)
-		{
-			// just wait
-		}
+		CTimer::SimpleMsDelay (100);
 
 		m_ActLED.Off ();
-		for (volatile unsigned i = 1; i <= 10000000; i++)
-		{
-			// just wait
-		}
+		CTimer::SimpleMsDelay (100);
 	}
 
 	return ShutdownHalt;

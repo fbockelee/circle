@@ -4,7 +4,7 @@
 
 CIRCLEHOME = ../..
 
-OBJS	= ws28xxstripe.o
+OBJS	= ws28xxstripe.o ws2812oversmi.o
 
 libws28xx.a: $(OBJS)
 	@echo "  AR    $@"
@@ -12,3 +12,5 @@ libws28xx.a: $(OBJS)
 	@$(AR) cr $@ $(OBJS)
 
 include $(CIRCLEHOME)/Rules.mk
+
+-include $(DEPS)

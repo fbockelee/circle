@@ -2,7 +2,7 @@
 // sysinit.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2024  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -21,12 +21,22 @@
 #include <circle/memio.h>
 #include <circle/bcm2835.h>
 #include <circle/bcm2836.h>
+#include <circle/bcm2712.h>
 #include <circle/machineinfo.h>
 #include <circle/memory.h>
+#include <circle/interrupt.h>
+#include <circle/southbridge.h>
+#include <circle/actled.h>
+#include <circle/timer.h>
 #include <circle/chainboot.h>
+#include <circle/qemu.h>
 #include <circle/synchronize.h>
 #include <circle/sysconfig.h>
+#include <circle/memorymap.h>
+#include <circle/version.h>
+#include <circle/string.h>
 #include <circle/macros.h>
+#include <circle/util.h>
 #include <circle/types.h>
 
 #ifdef __cplusplus
@@ -42,7 +52,7 @@ void __aeabi_atexit (void *pThis, void (*pFunc)(void *pThis), void *pHandle)
 	// TODO
 }
 
-#if AARCH == 64
+#if AARCH == 64 || defined (__clang__)
 
 void __cxa_atexit (void *pThis, void (*pFunc)(void *pThis), void *pHandle) WEAK;
 
@@ -73,6 +83,13 @@ int *__errno (void)
 
 #endif
 
+static int s_nExitStatus = EXIT_STATUS_SUCCESS;
+
+void set_qemu_exit_status (int nStatus)
+{
+	s_nExitStatus = nStatus;
+}
+
 void halt (void)
 {
 #ifdef ARM_ALLOW_MULTI_CORE
@@ -84,6 +101,9 @@ void halt (void)
 #else
 	u64 nMPIDR;
 	asm volatile ("mrs %0, mpidr_el1" : "=r" (nMPIDR));
+#endif
+#if RASPPI >= 5
+	nMPIDR >>= 8;
 #endif
 	unsigned nCore = nMPIDR & (CORES-1);
 
@@ -116,13 +136,35 @@ void halt (void)
 #ifndef USE_RPI_STUB_AT
 	DisableFIQs ();
 #endif
-	
+
+#ifdef LEAVE_QEMU_ON_HALT
+#ifdef ARM_ALLOW_MULTI_CORE
+	if (nCore == 0)
+#endif
+	{
+		// exit QEMU using the ARM semihosting (aka "Angel") interface
+		SemihostingExit (s_nExitStatus);
+	}
+#endif
+
 	for (;;)
 	{
 #if RASPPI != 1
 		DataSyncBarrier ();
 		asm volatile ("wfi");
 #endif
+	}
+}
+
+void error_halt (unsigned errnum)
+{
+	CActLED ActLED;
+
+	while (1)
+	{
+		ActLED.Blink (errnum, 100, 300);
+
+		CTimer::SimpleMsDelay (1000);
 	}
 }
 
@@ -137,6 +179,45 @@ void reboot (void)					// by PlutoniumBob@raspi-forum
 
 	for (;;);					// wait for reset
 }
+
+#if RASPPI >= 5
+
+void poweroff (void)
+{
+	asm volatile
+	(
+		"mov	x0, %0\n"
+		"smc	#0\n"
+
+		:: "r" (0x84000008UL)			// function code SYSTEM_OFF
+	);
+
+	for (;;);
+}
+
+boolean is_power_button_pressed (void)
+{
+	boolean bResult = !(read32 (ARM_GPIO1_DATA0) & BIT (20));
+	if (bResult)
+	{
+		// debounce button
+		unsigned nStartTicks = CTimer::GetClockTicks ();
+		while (CTimer::GetClockTicks () - nStartTicks < CLOCKHZ / 20)
+		{
+			boolean bStatus = !(read32 (ARM_GPIO1_DATA0) & BIT (20));
+			if (bStatus != bResult)
+			{
+				bResult = bStatus;
+
+				nStartTicks = CTimer::GetClockTicks ();
+			}
+		}
+	}
+
+	return bResult;
+}
+
+#endif
 
 #if AARCH == 32
 
@@ -153,15 +234,19 @@ static void vfpinit (void)
 #define VFP_FPEXC_EN	(1 << 30)
 	__asm volatile ("fmxr fpexc, %0" : : "r" (VFP_FPEXC_EN));
 
+#define VFP_FPSCR_FZ	(1 << 24)	// enable Flush-to-zero mode
 #define VFP_FPSCR_DN	(1 << 25)	// enable Default NaN mode
-	__asm volatile ("fmxr fpscr, %0" : : "r" (VFP_FPSCR_DN));
+	__asm volatile ("fmxr fpscr, %0" : : "r" (VFP_FPSCR_FZ | VFP_FPSCR_DN));
 }
 
 #endif
 
+char circle_version_string[10];
+
 void sysinit (void)
 {
 	EnableFIQs ();		// go to IRQ_LEVEL, EnterCritical() will not work otherwise
+	EnableIRQs ();		// go to TASK_LEVEL
 
 #if AARCH == 32
 #if RASPPI != 1
@@ -182,15 +267,53 @@ void sysinit (void)
 	// clear BSS
 	extern unsigned char __bss_start;
 	extern unsigned char _end;
-	for (unsigned char *pBSS = &__bss_start; pBSS < &_end; pBSS++)
+	memset (&__bss_start, 0, &_end - &__bss_start);
+
+	// halt, if KERNEL_MAX_SIZE is not properly set
+	// cannot inform the user here
+	if (MEM_KERNEL_END < reinterpret_cast<uintptr> (&_end))
 	{
-		*pBSS = 0;
+		halt ();
 	}
+
+	CMemorySystem Memory;
 
 	CMachineInfo MachineInfo;
 
-#if STDLIB_SUPPORT >= 2
-	CMemorySystem Memory;
+#if RASPPI >= 4
+	Memory.SetupHighMem ();
+#endif
+
+	// set circle_version_string[]
+	CString Version;
+	if (CIRCLE_PATCH_VERSION)
+	{
+		Version.Format ("%d.%d.%d", CIRCLE_MAJOR_VERSION, CIRCLE_MINOR_VERSION,
+			        CIRCLE_PATCH_VERSION);
+	}
+	else if (CIRCLE_MINOR_VERSION)
+	{
+		Version.Format ("%d.%d", CIRCLE_MAJOR_VERSION, CIRCLE_MINOR_VERSION);
+	}
+	else
+	{
+		Version.Format ("%d", CIRCLE_MAJOR_VERSION);
+	}
+
+	strcpy (circle_version_string, Version);
+
+	CInterruptSystem InterruptSystem;
+	if (!InterruptSystem.Initialize ())
+	{
+		error_halt (2);
+	}
+
+#if RASPPI >= 5 && !defined (NO_SOUTHBRIDGE_EARLY)
+	CSouthbridge Southbridge (&InterruptSystem);
+	if (!Southbridge.Initialize ())
+	{
+		error_halt (3);
+	}
 #endif
 
 	// call constructors of static objects
@@ -201,14 +324,14 @@ void sysinit (void)
 		(**pFunc) ();
 	}
 
-	extern int main (void);
-	if (main () == EXIT_REBOOT)
+	extern int MAINPROC (void);
+	int nResult = MAINPROC ();
+	if (nResult == EXIT_REBOOT)
 	{
 		if (IsChainBootEnabled ())
 		{
-#if STDLIB_SUPPORT >= 2
+			InterruptSystem.Destructor ();
 			Memory.Destructor ();
-#endif
 
 			DisableFIQs ();
 
@@ -217,6 +340,12 @@ void sysinit (void)
 
 		reboot ();
 	}
+#if RASPPI >= 5
+	else if (nResult == EXIT_POWER_OFF)
+	{
+		poweroff ();
+	}
+#endif
 
 	halt ();
 }
@@ -226,6 +355,7 @@ void sysinit (void)
 void sysinit_secondary (void)
 {
 	EnableFIQs ();		// go to IRQ_LEVEL, EnterCritical() will not work otherwise
+	EnableIRQs ();		// go to TASK_LEVEL
 
 #if AARCH == 32
 	// L1 data cache may contain random entries after reset, delete them

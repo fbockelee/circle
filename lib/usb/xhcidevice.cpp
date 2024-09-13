@@ -2,7 +2,7 @@
 // xhcidevice.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2019-2024  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -23,14 +23,34 @@
 #include <circle/logger.h>
 #include <circle/memory.h>
 #include <circle/util.h>
+#include <circle/bcmpropertytags.h>
+#include <circle/machineinfo.h>
+#include <circle/rp1int.h>
 #include <assert.h>
+
+#if RASPPI == 4
+#ifdef USE_XHCI_INTERNAL
+	#define ARM_IRQ_XHCI	ARM_IRQ_XHCI_INTERNAL
+#else
+	#define ARM_IRQ_XHCI	ARM_IRQ_PCIE_HOST_INTA
+#endif
+#else
+	#define ARM_IRQ_XHCI	(m_nDevice == 0 ? RP1_IRQ_USBHOST0_0 : RP1_IRQ_USBHOST1_0)
+#endif
 
 static const char From[] = "xhci";
 
-CXHCIDevice::CXHCIDevice (CInterruptSystem *pInterruptSystem, CTimer *pTimer)
-:	m_PCIeHostBridge (pInterruptSystem),
-	m_nSharedMemStart (CMemorySystem::GetCoherentPage (COHERENT_SLOT_XHCI_START)),
-	m_nSharedMemEnd (CMemorySystem::GetCoherentPage (COHERENT_SLOT_XHCI_END) + PAGE_SIZE - 1),
+CXHCIDevice::CXHCIDevice (CInterruptSystem *pInterruptSystem, CTimer *pTimer, boolean bPlugAndPlay,
+			  unsigned nDevice, CXHCISharedMemAllocator *pSharedMemAllocator)
+:	CUSBHostController (bPlugAndPlay),
+	m_pInterruptSystem (pInterruptSystem),
+	m_bInterruptConnected (FALSE),
+	m_nDevice (nDevice),
+#if RASPPI == 4 && !defined (USE_XHCI_INTERNAL)
+	m_PCIeHostBridge (pInterruptSystem),
+#endif
+	m_pSharedMemAllocator (pSharedMemAllocator),
+	m_bOwnSharedMemAllocator (FALSE),
 	m_pMMIO (0),
 	m_pSlotManager (0),
 	m_pEventManager (0),
@@ -40,8 +60,14 @@ CXHCIDevice::CXHCIDevice (CInterruptSystem *pInterruptSystem, CTimer *pTimer)
 	m_pRootHub (0),
 	m_bShutdown (FALSE)
 {
-	assert (m_nSharedMemStart != 0);
-	assert (m_nSharedMemEnd != 0);
+	if (m_pSharedMemAllocator == 0)
+	{
+		m_bOwnSharedMemAllocator = TRUE;
+
+		m_pSharedMemAllocator = new CXHCISharedMemAllocator (
+			CMemorySystem::GetCoherentPage (COHERENT_SLOT_XHCI_START),
+			CMemorySystem::GetCoherentPage (COHERENT_SLOT_XHCI_END) + PAGE_SIZE - 1);
+	}
 }
 
 CXHCIDevice::~CXHCIDevice (void)
@@ -54,6 +80,13 @@ CXHCIDevice::~CXHCIDevice (void)
 							& ~XHCI_REG_OP_USBCMD_RUN_STOP);
 
 		HWReset ();
+	}
+
+	if (m_bInterruptConnected)
+	{
+		assert (m_pInterruptSystem != 0);
+		m_pInterruptSystem->DisconnectIRQ (ARM_IRQ_XHCI);
+		m_bInterruptConnected = FALSE;
 	}
 
 	m_pScratchpadBufferArray = 0;
@@ -71,15 +104,35 @@ CXHCIDevice::~CXHCIDevice (void)
 	delete m_pMMIO;
 	m_pMMIO = 0;
 
-	m_nSharedMemStart = 0;
-	m_nSharedMemEnd = 0;
+	if (m_bOwnSharedMemAllocator)
+	{
+		delete m_pSharedMemAllocator;
+	}
+	m_pSharedMemAllocator = 0;
 }
 
-boolean CXHCIDevice::Initialize (void)
+boolean CXHCIDevice::Initialize (boolean bScanDevices)
 {
 	// init class-specific allocators in USB library
 	INIT_PROTECTED_CLASS_ALLOCATOR (CUSBRequest, XHCI_CONFIG_MAX_REQUESTS, IRQ_LEVEL);
 
+#ifdef USE_XHCI_INTERNAL
+	if (CMachineInfo::Get ()->GetMachineModel () != MachineModel4B)
+	{
+		CBcmPropertyTags Tags;
+		TPropertyTagPowerState PowerState;
+		PowerState.nDeviceId = DEVICE_ID_USB_HCD;
+		PowerState.nState = POWER_STATE_ON | POWER_STATE_WAIT;
+		if (   !Tags.GetTag (PROPTAG_SET_POWER_STATE, &PowerState, sizeof PowerState)
+		    ||  (PowerState.nState & POWER_STATE_NO_DEVICE)
+		    || !(PowerState.nState & POWER_STATE_ON))
+		{
+			CLogger::Get ()->Write (From, LogError, "Cannot power on");
+
+			return FALSE;
+		}
+	}
+#elif RASPPI == 4
 	// PCIe init
 	if (!m_PCIeHostBridge.Initialize ())
 	{
@@ -88,12 +141,13 @@ boolean CXHCIDevice::Initialize (void)
 		return FALSE;
 	}
 
-	if (!m_PCIeHostBridge.ConnectMSI (InterruptStub, this))
-	{
-		CLogger::Get ()->Write (From, LogError, "Cannot connect MSI");
-
-		return FALSE;
-	}
+	// load VIA VL805 firmware after PCIe reset
+	CBcmPropertyTags Tags;
+	TPropertyTagSimple NotifyXHCIReset;
+	NotifyXHCIReset.nValue =   XHCI_PCIE_BUS  << 20
+				 | XHCI_PCIE_SLOT << 15
+				 | XHCI_PCIE_FUNC << 12;
+	Tags.GetTag (PROPTAG_NOTIFY_XHCI_RESET, &NotifyXHCIReset, sizeof NotifyXHCIReset, 4);
 
 	if (!m_PCIeHostBridge.EnableDevice (XHCI_PCI_CLASS_CODE, XHCI_PCIE_SLOT, XHCI_PCIE_FUNC))
 	{
@@ -101,9 +155,21 @@ boolean CXHCIDevice::Initialize (void)
 
 		return FALSE;
 	}
+#endif
+
+	uintptr nBaseAddress = ARM_XHCI0_BASE;
+#if RASPPI == 4
+	assert (m_nDevice == 0);
+#else
+	assert (m_nDevice <= 1);
+	if (m_nDevice == 1)
+	{
+		nBaseAddress = ARM_XHCI1_BASE;
+	}
+#endif
 
 	// version check
-	u16 usVersion = read16 (ARM_XHCI_BASE + XHCI_REG_CAP_HCIVERSION);
+	u16 usVersion = read16 (nBaseAddress + XHCI_REG_CAP_HCIVERSION);
 	if (usVersion != XHCI_SUPPORTED_VERSION)
 	{
 		CLogger::Get ()->Write (From, LogError, "Unsupported xHCI version (%X)",
@@ -113,7 +179,7 @@ boolean CXHCIDevice::Initialize (void)
 	}
 
 	// init MMIO space
-	m_pMMIO = new CXHCIMMIOSpace (ARM_XHCI_BASE);
+	m_pMMIO = new CXHCIMMIOSpace (nBaseAddress);
 	assert (m_pMMIO != 0);
 
 	// get some capabilities
@@ -131,6 +197,12 @@ boolean CXHCIDevice::Initialize (void)
 	unsigned nMaxScratchpadBufs =      (m_pMMIO->cap_read32 (XHCI_REG_CAP_HCSPARAMS2)
 				         & XHCI_REG_CAP_HCSPARAMS2_MAX_SCRATCHPAD_BUFS__MASK)
 				      >> XHCI_REG_CAP_HCSPARAMS2_MAX_SCRATCHPAD_BUFS__SHIFT;
+
+#if XHCI_CONTEXT_SIZE == 64
+	assert (m_pMMIO->cap_read32 (XHCI_REG_CAP_HCCPARAMS) & XHCI_REG_CAP_HCCPARAMS1_CSZ);
+#else
+	assert (!(m_pMMIO->cap_read32 (XHCI_REG_CAP_HCCPARAMS) & XHCI_REG_CAP_HCCPARAMS1_CSZ));
+#endif
 
 #ifdef XHCI_DEBUG
 	CLogger::Get ()->Write (From, LogDebug, "%u slots, %u ports, %u scratchpad bufs",
@@ -191,6 +263,10 @@ boolean CXHCIDevice::Initialize (void)
 	m_pRootHub = new CXHCIRootHub (nMaxPorts, this);
 	assert (m_pRootHub != 0);
 
+	assert (m_pInterruptSystem != 0);
+	m_pInterruptSystem->ConnectIRQ (ARM_IRQ_XHCI, InterruptStub, this);
+	m_bInterruptConnected = TRUE;
+
 	// start controller
 	m_pMMIO->op_write32 (XHCI_REG_OP_USBCMD,   m_pMMIO->op_read32 (XHCI_REG_OP_USBCMD)
 						 | XHCI_REG_OP_USBCMD_INTE);
@@ -199,22 +275,28 @@ boolean CXHCIDevice::Initialize (void)
 						 | XHCI_REG_OP_USBCMD_RUN_STOP);
 
 	// init root hub
-	if (!m_pRootHub->Initialize ())
+	if (   !IsPlugAndPlay ()
+	    || bScanDevices)
 	{
-		CLogger::Get ()->Write (From, LogError, "Cannot init root hub");
+		if (!m_pRootHub->Initialize ())
+		{
+			CLogger::Get ()->Write (From, LogError, "Cannot init root hub");
 
-		return FALSE;
+			return FALSE;
+		}
 	}
 
-#if !defined (NDEBUG) && defined (XHCI_DEBUG2)
+#if !defined (NDEBUG) && defined (XHCI_DEBUG2) && RASPPI == 4
 	DumpStatus ();
 #endif
 
 	return TRUE;
 }
 
-void CXHCIDevice::ReScanDevices (void)	// TODO
+void CXHCIDevice::ReScanDevices (void)
 {
+	assert (m_pRootHub != 0);
+	m_pRootHub->ReScanDevices ();
 }
 
 boolean CXHCIDevice::SubmitBlockingRequest (CUSBRequest *pURB, unsigned nTimeoutMs)
@@ -271,62 +353,38 @@ CXHCIRootHub *CXHCIDevice::GetRootHub (void)
 
 void *CXHCIDevice::AllocateSharedMem (size_t nSize, size_t nAlign, size_t nBoundary)
 {
-	assert (nSize > 0);
-	assert (nAlign != 0);
-	assert (nAlign <= nBoundary);
-	assert (m_nSharedMemStart != 0);
-	assert (m_nSharedMemEnd != 0);
-
-	size_t nAlignMask = nAlign - 1;
-	if (m_nSharedMemStart & nAlignMask)
-	{
-		m_nSharedMemStart += nAlignMask;
-		m_nSharedMemStart &= ~nAlignMask;
-	}
-
-	size_t nBoundaryMask = nBoundary - 1;
-	if (   (m_nSharedMemStart & ~nBoundaryMask)
-	    != ((m_nSharedMemStart + nSize-1) & ~nBoundaryMask))
-	{
-		m_nSharedMemStart += nBoundaryMask;
-		m_nSharedMemStart &= ~nBoundaryMask;
-	}
-
-	void *pResult = (void *) m_nSharedMemStart;
-
-	m_nSharedMemStart += nSize;
-	if (m_nSharedMemStart <= m_nSharedMemEnd)
+	assert (m_pSharedMemAllocator != 0);
+	void *pResult = m_pSharedMemAllocator->Allocate (nSize, nAlign, nBoundary);
+	if (pResult != 0)
 	{
 		memset (pResult, 0, nSize);
 	}
 	else
 	{
 		CLogger::Get ()->Write (From, LogError, "Shared memory space exhausted");
-
-		pResult = 0;
 	}
 
 	return pResult;
 }
 
-void CXHCIDevice::FreeSharedMem (void *pBlock)	// TODO
+void CXHCIDevice::FreeSharedMem (void *pBlock)
 {
-#ifdef XHCI_DEBUG
-	CLogger::Get ()->Write (From, LogWarning,
-				"Trying to free shared memory at 0x%lX", (uintptr) pBlock);
-#endif
+	assert (m_pSharedMemAllocator != 0);
+	m_pSharedMemAllocator->Free (pBlock);
 }
 
-void CXHCIDevice::InterruptHandler (unsigned nVector)
+void CXHCIDevice::InterruptHandler (void)
 {
 #ifdef XHCI_DEBUG2
-	CLogger::Get ()->Write (From, LogDebug, "MSI%u", nVector);
+	CLogger::Get ()->Write (From, LogDebug, "IRQ");
 #endif
-	assert (nVector == 0);
 
 	// acknowledge interrupt
 	u32 nStatus = m_pMMIO->op_read32 (XHCI_REG_OP_USBSTS);
 	m_pMMIO->op_write32 (XHCI_REG_OP_USBSTS, nStatus | XHCI_REG_OP_USBSTS_EINT);
+
+	m_pMMIO->rt_write32 (0, XHCI_REG_RT_IR_IMAN,   m_pMMIO->rt_read32 (0, XHCI_REG_RT_IR_IMAN)
+						     | XHCI_REG_RT_IR_IMAN_IP);
 
 	if (nStatus & XHCI_REG_OP_USBSTS_HCH)
 	{
@@ -340,26 +398,41 @@ void CXHCIDevice::InterruptHandler (unsigned nVector)
 		return;
 	}
 
+	TXHCITRB *pEventTRB = 0;
+	TXHCITRB *pNextEventTRB;
 	assert (m_pEventManager != 0);
-	while (m_pEventManager->HandleEvents ())
+	unsigned nTries = XHCI_CONFIG_MAX_EVENTS_PER_INTR;
+	while (   nTries-- != 0
+	       && (pNextEventTRB = m_pEventManager->HandleEvents ()) != 0)
 	{
-		// just loop
+		pEventTRB = pNextEventTRB;
+	}
+
+	if (pEventTRB != 0)
+	{
+		m_pMMIO->rt_write64 (0, XHCI_REG_RT_IR_ERDP_LO,   XHCI_TO_DMA (pEventTRB)
+								| XHCI_REG_RT_IR_ERDP_LO_EHB);
+	}
+	else
+	{
+		m_pMMIO->rt_write64 (0, XHCI_REG_RT_IR_ERDP_LO,
+				       (  m_pMMIO->rt_read64 (0, XHCI_REG_RT_IR_ERDP_LO)
+				        & XHCI_REG_RT_IR_ERDP__MASK)
+				     | XHCI_REG_RT_IR_ERDP_LO_EHB);
 	}
 }
 
-void CXHCIDevice::InterruptStub (unsigned nVector, void *pParam)
+void CXHCIDevice::InterruptStub (void *pParam)
 {
 	CXHCIDevice *pThis = (CXHCIDevice *) pParam;
 	assert (pThis != 0);
 
-	pThis->InterruptHandler (nVector);
+	pThis->InterruptHandler ();
 }
 
 boolean CXHCIDevice::HWReset (void)
 {
-	if (   !m_pMMIO->op_wait32 (XHCI_REG_OP_USBSTS, XHCI_REG_OP_USBSTS_CNR, 0, 100000)
-	    || !m_pMMIO->op_wait32 (XHCI_REG_OP_USBSTS, XHCI_REG_OP_USBSTS_HCH,
-				    XHCI_REG_OP_USBSTS_HCH, 100000))
+	if (!m_pMMIO->op_wait32 (XHCI_REG_OP_USBSTS, XHCI_REG_OP_USBSTS_CNR, 0, 100000))
 	{
 		return FALSE;
 	}
@@ -387,11 +460,16 @@ void CXHCIDevice::DumpStatus (void)
 	m_pSlotManager->DumpStatus ();
 	m_pMMIO->DumpStatus ();
 
+#if RASPPI == 4 && !defined (USE_XHCI_INTERNAL)
 	m_PCIeHostBridge.DumpStatus (XHCI_PCIE_SLOT, XHCI_PCIE_FUNC);
+#endif
 
-	CLogger::Get ()->Write (From, LogDebug, "%u KB shared memory free",
-				  m_nSharedMemEnd > m_nSharedMemStart
-				? (m_nSharedMemEnd - m_nSharedMemStart) / 1024 : 0);
+	if (m_bOwnSharedMemAllocator)
+	{
+		assert (m_pSharedMemAllocator != 0);
+		CLogger::Get ()->Write (From, LogDebug, "%u KB shared memory free",
+				(unsigned) (m_pSharedMemAllocator->GetFreeSpace () / 1024));
+	}
 }
 
 #endif

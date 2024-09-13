@@ -2,18 +2,32 @@
 
 make="${MAKE:-make}"
 
-makesample=true
+makesample=false
+if [[ $1 == "--sample" ]]
+then
+	makesample=true
+	shift
+fi
 if [[ $1 == "--nosample" ]]
 then
 	makesample=false
 	shift
 fi
 
+cd tools
+$make $1 $2 || exit
+cd ..
+
 cd lib
 $make $1 $2 || exit
 
 cd usb
 $make $1 $2 || exit
+
+cd gadget
+$make $1 $2 || exit
+cd ..
+
 cd ..
 
 cd input
@@ -37,7 +51,7 @@ cd net
 $make $1 $2 || exit
 cd ..
 
-cd bt
+cd sound
 $make $1 $2 || exit
 cd ..
 

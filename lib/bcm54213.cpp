@@ -16,7 +16,7 @@
 //	Licensed under GPLv2
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2019-2021  R. Stange <rsta2@o2online.de>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -77,6 +77,8 @@
 						// default queues
 #define GENET_Q16_RX_BD_CNT		(TOTAL_DESC - RX_QUEUES * RX_BDS_PER_Q)
 #define GENET_Q16_TX_BD_CNT		(TOTAL_DESC - TX_QUEUES * TX_BDS_PER_Q)
+
+#define TX_RING_INDEX			1	// using highest TX priority queue
 
 // Tx/Rx DMA register offset, skip 256 descriptors
 #define GENET_TDMA_REG_OFF		(TDMA_OFFSET + TOTAL_DESC * DMA_DESC_SIZE)
@@ -588,6 +590,12 @@ CBcm54213Device::~CBcm54213Device (void)
 {
 	intr_disable ();
 
+	dma_disable ();
+	init_tx_queues (false);
+
+	umac_reset2 ();
+	reset_umac ();
+
 	if (m_bInterruptConnected)
 	{
 		CInterruptSystem::Get ()->DisconnectIRQ (ARM_IRQ_BCM54213_0);
@@ -690,6 +698,17 @@ const CMACAddress *CBcm54213Device::GetMACAddress (void) const
 	return &m_MACAddress;
 }
 
+boolean CBcm54213Device::IsSendFrameAdvisable (void)
+{
+	unsigned index = TX_RING_INDEX;			// see SendFrame() for mapping strategy
+	if (index == 0)
+		index = GENET_DESC_INDEX;
+	else
+		index -= 1;
+							// is there room for a frame?
+	return m_tx_rings[index].free_bds >= 2;		// atomic read
+}
+
 boolean CBcm54213Device::SendFrame (const void *pBuffer, unsigned nLength)
 {
 	assert (pBuffer != 0);
@@ -701,7 +720,7 @@ boolean CBcm54213Device::SendFrame (const void *pBuffer, unsigned nLength)
 	// index = 2, goes to ring 1.
 	// index = 3, goes to ring 2.
 	// index = 4, goes to ring 3.
-	unsigned index = 0;	// choosing ring16, because it has more buffers than ring0-3
+	unsigned index = TX_RING_INDEX;
 	if (index == 0)
 		index = GENET_DESC_INDEX;
 	else
@@ -1089,6 +1108,11 @@ void CBcm54213Device::set_rx_mode(void)
 // clear Hardware Filter Block and disable all filtering
 void CBcm54213Device::hfb_init(void)
 {
+	// this has no function, but to suppress warnings from clang compiler >>>
+	hfb_reg_readl (HFB_CTRL);
+	hfb_readl (0);
+	// <<<
+
 	hfb_reg_writel(0, HFB_CTRL);
 	hfb_reg_writel(0, HFB_FLT_ENABLE_V3PLUS);
 	hfb_reg_writel(0, HFB_FLT_ENABLE_V3PLUS + 4);
@@ -1170,7 +1194,7 @@ int CBcm54213Device::init_dma(void)
 	tdma_writel(DMA_MAX_BURST_LENGTH, DMA_SCB_BURST_SIZE);
 
 	// Initialize Tx queues
-	init_tx_queues();
+	init_tx_queues(true);
 
 	return 0;
 }
@@ -1206,7 +1230,7 @@ void CBcm54213Device::enable_dma(u32 dma_ctrl)
 	tdma_writel(reg, DMA_CTRL);
 }
 
-// Initialize Tx queues
+// Initialize or reset Tx queues
 //
 // Queues 0-3 are priority-based, each one has 32 descriptors,
 // with queue 0 being the highest priority queue.
@@ -1220,7 +1244,7 @@ void CBcm54213Device::enable_dma(u32 dma_ctrl)
 // - Tx queue 2 uses m_tx_cbs[64..95]
 // - Tx queue 3 uses m_tx_cbs[96..127]
 // - Tx queue 16 uses m_tx_cbs[128..255]
-void CBcm54213Device::init_tx_queues(void)
+void CBcm54213Device::init_tx_queues(bool enable)
 {
 	u32 dma_ctrl = tdma_readl(DMA_CTRL);
 	u32 dma_enable = dma_ctrl & DMA_EN;
@@ -1230,8 +1254,11 @@ void CBcm54213Device::init_tx_queues(void)
 	dma_ctrl = 0;
 	u32 ring_cfg = 0;
 
-	// Enable strict priority arbiter mode
-	tdma_writel(DMA_ARBITER_SP, DMA_ARB_CTRL);
+	if (enable)
+	{
+		// Enable strict priority arbiter mode
+		tdma_writel(DMA_ARBITER_SP, DMA_ARB_CTRL);
+	}
 
 	u32 dma_priority[3] = {0, 0, 0};
 
@@ -1251,18 +1278,29 @@ void CBcm54213Device::init_tx_queues(void)
 	dma_priority[DMA_PRIO_REG_INDEX(GENET_DESC_INDEX)] |=
 		((GENET_Q0_PRIORITY + TX_QUEUES) << DMA_PRIO_REG_SHIFT(GENET_DESC_INDEX));
 
-	// Set Tx queue priorities
-	tdma_writel(dma_priority[0], DMA_PRIORITY_0);
-	tdma_writel(dma_priority[1], DMA_PRIORITY_1);
-	tdma_writel(dma_priority[2], DMA_PRIORITY_2);
+	if (enable)
+	{
+		// Set Tx queue priorities
+		tdma_writel(dma_priority[0], DMA_PRIORITY_0);
+		tdma_writel(dma_priority[1], DMA_PRIORITY_1);
+		tdma_writel(dma_priority[2], DMA_PRIORITY_2);
 
-	// Enable Tx queues
-	tdma_writel(ring_cfg, DMA_RING_CFG);
+		// Enable Tx queues
+		tdma_writel(ring_cfg, DMA_RING_CFG);
 
-	// Enable Tx DMA
-	if (dma_enable)
-		dma_ctrl |= DMA_EN;
-	tdma_writel(dma_ctrl, DMA_CTRL);
+		// Enable Tx DMA
+		if (dma_enable)
+			dma_ctrl |= DMA_EN;
+		tdma_writel(dma_ctrl, DMA_CTRL);
+	}
+	else
+	{
+		// Disable Tx queues
+		tdma_writel(0, DMA_RING_CFG);
+
+		// Disable Tx DMA
+		tdma_writel(0, DMA_CTRL);
+	}
 }
 
 // Initialize a Tx ring along with corresponding hardware registers
@@ -1584,7 +1622,13 @@ int CBcm54213Device::mii_probe(void)
 	m_old_duplex = -1;
 	m_old_pause = -1;
 
+	// probe PHY
+	m_phy_id = 0x01;
 	int ret = mdio_reset();
+	if (ret) {
+		m_phy_id = 0x00;
+		ret = mdio_reset();
+	}
 	if (ret)
 		return ret;
 
@@ -1691,8 +1735,6 @@ int CBcm54213Device::mii_config(bool init)
 // UniMAC MDIO
 //
 
-#define PHY_ID			0x01		// address of this PHY
-
 #define MDIO_CMD		0x00		// same register as UMAC_MDIO_CMD
 
 #define MII_BMSR		0x01
@@ -1727,10 +1769,10 @@ static inline void mdio_start(void)
 	mdio_writel(reg, MDIO_CMD);
 }
 
-static inline unsigned mdio_busy(void)
-{
-	return mdio_readl(MDIO_CMD) & MDIO_START_BUSY;
-}
+// static inline unsigned mdio_busy(void)
+// {
+// 	return mdio_readl(MDIO_CMD) & MDIO_START_BUSY;
+// }
 
 // Workaround for integrated BCM7xxx Gigabit PHYs which have a problem with
 // their internal MDIO management controller making them fail to successfully
@@ -1740,7 +1782,9 @@ static inline unsigned mdio_busy(void)
 // PHY device for this peripheral.
 int CBcm54213Device::mdio_reset(void)
 {
-	mdio_read(MII_BMSR);
+	int ret = mdio_read(MII_BMSR);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -1749,7 +1793,7 @@ int CBcm54213Device::mdio_read(int reg)
 {
 	// Prepare the read operation
 	u32 cmd =   MDIO_RD
-		  | (PHY_ID << MDIO_PMD_SHIFT)
+		  | (m_phy_id << MDIO_PMD_SHIFT)
 		  | (reg << MDIO_REG_SHIFT);
 	mdio_writel(cmd, MDIO_CMD);
 
@@ -1769,7 +1813,7 @@ void CBcm54213Device::mdio_write(int reg, u16 val)
 {
 	// Prepare the write operation
 	u32 cmd =   MDIO_WR
-		  | (PHY_ID << MDIO_PMD_SHIFT)
+		  | (m_phy_id << MDIO_PMD_SHIFT)
 		  | (reg << MDIO_REG_SHIFT)
 		  | (0xFFFF & val);
 	mdio_writel(cmd, MDIO_CMD);

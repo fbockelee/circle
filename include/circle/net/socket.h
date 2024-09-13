@@ -2,7 +2,7 @@
 // socket.h
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2015-2018  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2015-2024  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -49,7 +49,7 @@ public:
 	/// \param rForeignIP IP address of host to be connected
 	/// \param nForeignPort Number of port to be connected
 	/// \return Status (0 success, < 0 on error)
-	int Connect (CIPAddress &rForeignIP, u16 nForeignPort);
+	int Connect (const CIPAddress &rForeignIP, u16 nForeignPort);
 
 	/// \brief Listen for incoming connections (TCP only, must call Bind() before)
 	/// \param nBackLog Maximum number of simultaneous connections which may be accepted\n
@@ -65,7 +65,7 @@ public:
 	/// \brief Send a message to a remote host
 	/// \param pBuffer Pointer to the message
 	/// \param nLength Length of the message
-	/// \param nFlags  MSG_DONTWAIT or 0 (both doesn't wait for completion of the send operation)
+	/// \param nFlags  MSG_DONTWAIT (non-blocking operation) or 0 (blocking operation)
 	/// \return Length of the sent message (< 0 on error)
 	int Send (const void *pBuffer, unsigned nLength, int nFlags);
 
@@ -80,12 +80,12 @@ public:
 	/// \brief Send a message to a specific remote host
 	/// \param pBuffer	Pointer to the message
 	/// \param nLength	Length of the message
-	/// \param nFlags	MSG_DONTWAIT or 0 (both doesn't wait for completion of the send operation)
+	/// \param nFlags	MSG_DONTWAIT (non-blocking operation) or 0 (blocking operation)
 	/// \param rForeignIP	IP address of host to be sent to (ignored on TCP socket)
 	/// \param nForeignPort	Number of port to be sent to (ignored on TCP socket)
 	/// \return Length of the sent message (< 0 on error)
 	int SendTo (const void *pBuffer, unsigned nLength, int nFlags,
-		    CIPAddress &rForeignIP, u16 nForeignPort);
+		    const CIPAddress &rForeignIP, u16 nForeignPort);
 
 	/// \brief Receive a message from a remote host, return host/port of remote host
 	/// \param pBuffer Pointer to the message buffer

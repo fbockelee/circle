@@ -2,7 +2,7 @@
 // util.cpp
 //
 // Circle - A C++ bare metal environment for Raspberry Pi
-// Copyright (C) 2014-2019  R. Stange <rsta2@o2online.de>
+// Copyright (C) 2014-2021  R. Stange <rsta2@o2online.de>
 // 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -18,40 +18,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 #include <circle/util.h>
-
-void *memset (void *pBuffer, int nValue, size_t nLength)
-{
-	u32 *p32 = (u32 *) pBuffer;
-
-	if (   ((uintptr) p32 & 3) == 0
-	    && nLength >= 16)
-	{
-		u32 nValue32 = nValue | nValue << 8;
-		nValue32 |= nValue32 << 16;
-
-		do
-		{
-			*p32++ = nValue32;
-			*p32++ = nValue32;
-			*p32++ = nValue32;
-			*p32++ = nValue32;
-
-			nLength -= 16;
-		}
-		while (nLength >= 16);
-	}
-
-	char *p = (char *) p32;
-
-	while (nLength--)
-	{
-		*p++ = (char) nValue;
-	}
-
-	return pBuffer;
-}
-
-#if STDLIB_SUPPORT <= 1
 
 void *memmove (void *pDest, const void *pSrc, size_t nLength)
 {
@@ -74,6 +40,8 @@ void *memmove (void *pDest, const void *pSrc, size_t nLength)
 
 	return memcpy (pDest, pSrc, nLength);
 }
+
+#if STDLIB_SUPPORT <= 1
 
 int memcmp (const void *pBuffer1, const void *pBuffer2, size_t nLength)
 {
@@ -214,6 +182,47 @@ int strncmp (const char *pString1, const char *pString2, size_t nMaxLen)
 		return 1;
 	}
 	else if (*pString1 < *pString2)
+	{
+		return -1;
+	}
+
+	return 0;
+}
+
+int strncasecmp (const char *pString1, const char *pString2, size_t nMaxLen)
+{
+	int nChar1, nChar2;
+
+	while (   nMaxLen > 0
+	       && (nChar1 = toupper (*pString1)) != '\0'
+	       && (nChar2 = toupper (*pString2)) != '\0')
+	{
+		if (nChar1 > nChar2)
+		{
+			return 1;
+		}
+		else if (nChar1 < nChar2)
+		{
+			return -1;
+		}
+
+		nMaxLen--;
+		pString1++;
+		pString2++;
+	}
+
+	nChar2 = toupper (*pString2);
+
+	if (nMaxLen == 0)
+	{
+		return 0;
+	}
+
+	if (nChar1 > nChar2)
+	{
+		return 1;
+	}
+	else if (nChar1 < nChar2)
 	{
 		return -1;
 	}
@@ -512,6 +521,143 @@ unsigned long strtoul (const char *pString, char **ppEndPtr, int nBase)
 	return ulResult;
 }
 
+unsigned long long int strtoull (const char *pString, char **ppEndPtr, int nBase)
+{
+	unsigned long long ullResult = 0;
+	unsigned long long ullPrevResult;
+	int bMinus = 0;
+	int bFirst = 1;
+
+	if (ppEndPtr != 0)
+	{
+		*ppEndPtr = (char *) pString;
+	}
+
+	if (   nBase != 0
+	    && (   nBase < 2
+	        || nBase > 36))
+	{
+		return ullResult;
+	}
+
+	int c;
+	while ((c = *pString) == ' ' || c == '\f' || c == '\n' || c == '\r' || c == '\t' || c == '\v')
+	{
+		pString++;
+	}
+
+	if (   *pString == '+'
+	    || *pString == '-')
+	{
+		if (*pString++ == '-')
+		{
+			bMinus = 1;
+		}
+	}
+
+	if (*pString == '0')
+	{
+		pString++;
+
+		if (   *pString == 'x'
+		    || *pString == 'X')
+		{
+			if (   nBase != 0
+			    && nBase != 16)
+			{
+				return ullResult;
+			}
+
+			nBase = 16;
+
+			pString++;
+		}
+		else
+		{
+			if (nBase == 0)
+			{
+				nBase =  8;
+			}
+		}
+	}
+	else
+	{
+		if (nBase == 0)
+		{
+			nBase = 10;
+		}
+	}
+
+	while (1)
+	{
+		int c = *pString;
+
+		if (c < '0')
+		{
+			break;
+		}
+
+		if ('a' <= c && c <= 'z')
+		{
+			c -= 'a' - 'A';
+		}
+
+		if (c >= 'A')
+		{
+			c -= 'A' - '9' - 1;
+		}
+
+		c -= '0';
+
+		if (c >= nBase)
+		{
+			break;
+		}
+
+		ullPrevResult = ullResult;
+
+		ullResult *= nBase;
+		ullResult += c;
+
+		if (ullResult < ullPrevResult)
+		{
+			ullResult = (unsigned long) -1;
+
+			if (ppEndPtr != 0)
+			{
+				*ppEndPtr = (char *) pString;
+			}
+
+			return ullResult;
+		}
+
+		pString++;
+		bFirst = 0;
+	}
+
+	if (ppEndPtr != 0)
+	{
+		*ppEndPtr = (char *) pString;
+	}
+
+	if (bFirst)
+	{
+		return ullResult;
+	}
+
+	if (bMinus)
+	{
+		ullResult = -ullResult;
+	}
+
+	return ullResult;
+}
+
+int atoi (const char *pString)
+{
+	return (int) strtoul (pString, 0, 10);
+}
+
 #endif
 
 int char2int (char chValue)
@@ -540,6 +686,23 @@ u32 bswap32 (u32 ulValue)
 		| ((ulValue & 0x0000FF00) << 8)
 		| ((ulValue & 0x00FF0000) >> 8)
 		| ((ulValue & 0xFF000000) >> 24);
+}
+
+#endif
+
+#if !defined (__GNUC__) || (AARCH == 32 && STDLIB_SUPPORT == 0)
+
+int parity32 (unsigned nValue)
+{
+	int nResult = 0;
+
+	while (nValue != 0)
+	{
+		nResult ^= (nValue & 1);
+		nValue >>= 1;
+	}
+
+	return nResult;
 }
 
 #endif
